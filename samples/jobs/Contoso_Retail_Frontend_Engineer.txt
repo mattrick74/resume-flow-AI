@@ -1,0 +1,17 @@
+URL: https://jobs.example.org/contoso/frontend-engineer
+
+Frontend Engineer
+Contoso Retail - Remote (US)
+
+What you'll do
+- Build accessible customer-facing experiences in React and TypeScript
+- Collaborate with designers in Figma
+
+What you bring
+- 3+ years building React applications
+- TypeScript, JavaScript, CSS
+- Testing with Jest
+
+Nice to have
+- Next.js
+- GraphQL

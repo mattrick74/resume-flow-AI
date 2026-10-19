@@ -1,0 +1,23 @@
+URL: https://careers.example.com/jobs/senior-data-engineer-4821?utm_source=board
+
+Senior Data Engineer
+Acme Data Co - Austin, TX (Hybrid)
+
+About the role
+You will design and run the data pipelines behind our analytics products.
+
+Responsibilities
+- Build batch and streaming pipelines with Spark and Airflow
+- Model warehouse data in Snowflake using dbt
+- Own data infrastructure as code with Terraform
+
+Requirements
+- 5+ years of data engineering experience
+- Strong Python and SQL
+- Experience with Apache Spark, Apache Airflow and AWS
+- Must be authorized to work in the United States without sponsorship
+
+Preferred
+- Kafka
+- dbt
+- Snowflake

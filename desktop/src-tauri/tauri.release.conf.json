@@ -1,0 +1,11 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "build": {
+    "beforeBuildCommand": "npm run build && npm run build:sidecar"
+  },
+  "bundle": {
+    "resources": {
+      "../../backend/dist/resumeflow-backend/": "sidecar/"
+    }
+  }
+}
