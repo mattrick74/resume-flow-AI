@@ -164,13 +164,35 @@ def test_semantic_match_requires_real_evidence(client, secret_store, fake_ai, te
     fake_ai.on("JobRequirements", lambda text: requirements)
 
     def semantic(text: str) -> dict:
-        evidence_ids = [line.split("]")[0].lstrip("[") for line in text.splitlines() if line.startswith("[B-")]
-        return {
-            "matches": [
-                {"skill": "Stream processing", "evidence_id": evidence_ids[0] if evidence_ids else None, "explanation": "streams events"},
-                {"skill": "Quantum annealing", "evidence_id": "B-made-up", "explanation": "invented"},
+        candidate_ids = [line.split('"')[1] for line in text.splitlines() if line.startswith('<candidate id="')]
+        evidence_by_candidate = {
+            candidate_id: [
+                line.split("]")[0].lstrip("[")
+                for line in text.splitlines()
+                if line.startswith(f"[{candidate_id}:B-")
             ]
+            for candidate_id in candidate_ids
         }
+        matches = []
+        first_evidence_id = evidence_by_candidate[candidate_ids[0]][0]
+        for index, candidate_id in enumerate(candidate_ids):
+            # Only C1 cites its own evidence. The other candidates try to cite C1's
+            # bullet, proving that cross-candidate evidence cannot be accepted.
+            matches.extend([
+                {
+                    "candidate_id": candidate_id,
+                    "skill": "Stream processing",
+                    "evidence_id": evidence_by_candidate[candidate_id][0] if index == 0 else first_evidence_id,
+                    "explanation": "streams events",
+                },
+                {
+                    "candidate_id": candidate_id,
+                    "skill": "Quantum annealing",
+                    "evidence_id": "C999:B-made-up",
+                    "explanation": "invented",
+                },
+            ])
+        return {"matches": matches}
 
     fake_ai.on("SemanticMatches", semantic)
     job = client.post("/jobs", json=_job_payload(1, job_url="https://q.example.com/1")).json()
@@ -178,3 +200,30 @@ def test_semantic_match_requires_real_evidence(client, secret_store, fake_ai, te
     mandatory = some["details"]["components"]["mandatory_skills"]
     assert "Quantum annealing" in mandatory["missing"]
     assert any(m["method"] == "semantic" and m["skill"] == "Stream processing" for m in mandatory["matched"])
+    semantic_stream_matches = sum(
+        m["method"] == "semantic" and m["skill"] == "Stream processing"
+        for match in job["matches"]
+        for m in match["details"].get("components", {}).get("mandatory_skills", {}).get("matched", [])
+    )
+    assert semantic_stream_matches == 1
+    semantic_calls = [call for call in fake_ai.calls if call["schema"] == "SemanticMatches"]
+    assert len(semantic_calls) == 1
+    assert semantic_calls[0]["input"].count('<candidate id="') > 1
+
+
+def test_semantic_match_is_skipped_for_one_candidate(client, secret_store, fake_ai):
+    candidate = upload(client, 0).json()["candidate"]
+    make_ready(client, candidate["id"])
+    secret_store.set("openai_api_key", "sk-test-key-123456")
+    requirements = JobRequirements(
+        title="Data Platform Engineer", employer="Acme", seniority="unknown", min_years_experience=None,
+        mandatory_skills=["Stream processing"], preferred_skills=[], duties=[],
+        industry=None, location=None, work_arrangement="remote", work_authorization=None,
+        security_clearance=None, required_credentials=[], employment_type=None, other_hard_requirements=[],
+    )
+    fake_ai.on("JobRequirements", lambda text: requirements)
+
+    job = client.post("/jobs", json=_job_payload(1, job_url="https://single.example.com/1"))
+
+    assert job.status_code == 201, job.text
+    assert [call["schema"] for call in fake_ai.calls] == ["JobRequirements"]

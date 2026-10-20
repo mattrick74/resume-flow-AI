@@ -348,6 +348,7 @@ def evaluate(req: JobRequirements, snap: dict[str, Any], weights: MatchWeights, 
 
 
 class SemanticMatch(BaseModel):
+    candidate_id: str
     skill: str
     evidence_id: str | None
     explanation: str
@@ -357,41 +358,74 @@ class SemanticMatches(BaseModel):
     matches: list[SemanticMatch]
 
 
-SEMANTIC_INSTRUCTIONS = f"""You decide whether a candidate's verified evidence demonstrates job skills that
+SEMANTIC_INSTRUCTIONS = f"""You decide whether candidates' verified evidence demonstrates job skills that
 didn't match by exact name (for example "Postgres" vs "relational databases").
 {UNTRUSTED_NOTICE}
 
-For every skill in <job_skills>, return one entry. Set evidence_id to the id of the single evidence item
-that clearly demonstrates the skill, or null if none does. Be strict: related-but-different technologies
-do not count, and never assume skills that aren't evidenced."""
+For every skill for every candidate in <candidates>, return one entry. Copy that candidate's id into
+candidate_id. Set evidence_id to the id of a single evidence item from that same candidate, or null if none
+clearly demonstrates the skill. Be strict: related-but-different technologies do not count, never use one
+candidate's evidence for another candidate, and never assume skills that aren't evidenced."""
 
 
-def semantic_matches(ai: AIService, job_id: str, skills: list[str], snap: dict[str, Any]) -> dict[str, dict[str, Any]]:
+def _semantic_evidence(snap: dict[str, Any], scope: str) -> dict[str, str]:
     evidence: dict[str, str] = {}
     for item in snap.get("skills", []):
-        evidence[f"S-{item['id'][:8]}"] = f"Skill: {item['name']}" + (f" — {item['evidence']}" if item.get("evidence") else "")
+        evidence[f"{scope}:S-{item['id'][:8]}"] = f"Skill: {item['name']}" + (f" — {item['evidence']}" if item.get("evidence") else "")
     for role in snap.get("employment", []):
-        evidence[f"R-{role['id']}"] = f"Title: {role['title']} at {role['employer']}"
+        evidence[f"{scope}:R-{role['id']}"] = f"Title: {role['title']} at {role['employer']}"
         for bullet in role["bullets"]:
-            evidence[f"B-{bullet['id']}"] = bullet["text"]
-    if not evidence or not skills:
+            evidence[f"{scope}:B-{bullet['id']}"] = bullet["text"]
+    return evidence
+
+
+def semantic_matches_batch(
+    ai: AIService,
+    job_id: str,
+    candidates: list[tuple[str, list[str], dict[str, Any]]],
+) -> dict[str, dict[str, dict[str, Any]]]:
+    """Resolve missing skills for a shortlist in one candidate-scoped AI request."""
+    batches: list[tuple[str, str, list[str], dict[str, str]]] = []
+    for index, (candidate_id, skills, snap) in enumerate(candidates, start=1):
+        scope = f"C{index}"
+        evidence = _semantic_evidence(snap, scope)
+        if evidence and skills:
+            batches.append((scope, candidate_id, skills, evidence))
+    if not batches:
         return {}
-    listing = "\n".join(f"[{key}] {text}" for key, text in evidence.items())
+
+    candidate_blocks = []
+    for scope, _candidate_id, skills, evidence in batches:
+        listing = "\n".join(f"[{key}] {text}" for key, text in evidence.items())
+        candidate_blocks.append(
+            f'<candidate id="{scope}">\n'
+            + wrap("job_skills", "\n".join(skills))
+            + "\n"
+            + wrap("candidate_evidence", listing)
+            + "\n</candidate>"
+        )
     result = ai.run(
         operation=GenerationOperation.SEMANTIC_MATCH,
         role="analysis",
         instructions=SEMANTIC_INSTRUCTIONS,
-        input_text=wrap("job_skills", "\n".join(skills)) + "\n\n" + wrap("candidate_evidence", listing),
+        input_text=wrap("candidates", "\n\n".join(candidate_blocks)),
         schema=SemanticMatches,
         job_id=job_id,
-        max_output_tokens=4000,
+        max_output_tokens=12_000,
     )
-    wanted = {normalize_skill(s): s for s in skills}
-    accepted: dict[str, dict[str, Any]] = {}
+    by_scope = {
+        scope: (candidate_id, {normalize_skill(s): s for s in skills}, evidence)
+        for scope, candidate_id, skills, evidence in batches
+    }
+    accepted: dict[str, dict[str, dict[str, Any]]] = {candidate_id: {} for _, candidate_id, _, _ in batches}
     for match in result.matches:
+        candidate = by_scope.get(match.candidate_id)
+        if candidate is None:
+            continue
+        candidate_id, wanted, evidence = candidate
         key = normalize_skill(match.skill)
         if key in wanted and match.evidence_id in evidence:
-            accepted[key] = {
+            accepted[candidate_id][key] = {
                 "skill": wanted[key],
                 "matched": True,
                 "method": "semantic",
@@ -483,24 +517,27 @@ def run_matching(db: Session, ai: AIService | None, job: Job) -> dict[str, Any]:
     db.rollback()  # end the read transaction before any AI call
 
     warnings: list[str] = []
-    if settings.semantic_matching and ai is not None and ai.available():
+    # Semantic matching exists to improve ranking between candidates. Avoid the
+    # extra AI round trip when there is nobody else to compare with.
+    if len(evaluated) > 1 and settings.semantic_matching and ai is not None and ai.available():
         shortlist = sorted(
             (e for e in evaluated if e[2].eligibility != EligibilityStatus.INELIGIBLE),
             key=lambda e: e[2].score,
             reverse=True,
         )[:SEMANTIC_CANDIDATE_LIMIT]
-        shortlist_ids = {entry[0].id for entry in shortlist}
-        for index, (candidate, snap, evaluation) in enumerate(list(evaluated)):
-            if candidate.id not in shortlist_ids:
-                continue
+        semantic_candidates = []
+        for candidate, snap, evaluation in shortlist:
             missing = evaluation.components["mandatory_skills"]["missing"] + evaluation.components["preferred_skills"]["missing"]
-            if not missing:
-                continue
-            try:
-                extra = semantic_matches(ai, job.id, missing, snap)
-            except AIError as exc:
-                warnings.append(f"Semantic matching skipped for {candidate.full_name}: {exc}")
-                continue
+            if missing:
+                semantic_candidates.append((candidate.id, missing, snap))
+        try:
+            semantic_results = semantic_matches_batch(ai, job.id, semantic_candidates)
+        except AIError as exc:
+            semantic_results = {}
+            warnings.append(f"Semantic matching skipped for shortlisted candidates: {exc}")
+
+        for index, (candidate, snap, evaluation) in enumerate(list(evaluated)):
+            extra = semantic_results.get(candidate.id)
             if extra:
                 evaluated[index] = (candidate, snap, evaluate(req, snap, weights, extra, gates_on=settings.hard_requirement_gates))
 
