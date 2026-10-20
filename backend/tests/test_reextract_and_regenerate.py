@@ -125,39 +125,6 @@ def test_evidence_states_years_like_a_resume():
     assert "4+" in listing and "verified" not in listing.lower()
 
 
-def test_ai_fact_check_never_sees_the_candidate_name(client, secret_store, fake_ai, tmp_path):
-    candidate = upload(client, 0).json()["candidate"]
-    make_ready(client, candidate["id"])
-    client.patch("/settings", json={"output_root": str(tmp_path / "out"), "pdf_converter": "none"})
-    job = client.post("/jobs", json={"job_url": SAMPLE_JOBS[0]["url"], "raw_jd": SAMPLE_JOBS[0]["text"]}).json()  # analysed offline
-    secret_store.set("openai_api_key", "sk-test-key-123456")
-
-    def tailoring(text: str) -> dict:
-        role_ids = [line.split("]")[0].lstrip("[") for line in text.splitlines() if line.startswith("[R-")]
-        bullet_ids = [line.split("]")[0].lstrip("[") for line in text.splitlines() if line.startswith("[B-")]
-        return {
-            "headline": "Senior Data Engineer",
-            "summary": "Senior Data Engineer with 9 years of total verified experience building pipelines.",
-            "skill_order": [],
-            "roles": [{"role_id": role_ids[0], "bullets": [{"text": "Built pipelines", "source_bullet_ids": [bullet_ids[0]]}]}],
-        }
-
-    fake_ai.on("AIResumeTailoring", tailoring)
-    fake_ai.on("AICoverLetter", lambda text: {"greeting": "Dear team,", "paragraphs": [{"text": "I am applying to Acme Data Co.", "evidence_ids": []}], "closing": "Sincerely,"})
-    fake_ai.on("AIClaimReview", lambda text: {"issues": [{"quote": "Avery Quinlan", "reason": "no name in evidence", "severity": "error"}]})
-    app = client.post("/applications", json={"job_id": job["id"], "candidate_id": candidate["id"]}).json()
-    drain(client)
-    resume = client.get(f"/applications/{app['id']}").json()["resume"]
-
-    review_inputs = [c["input"] for c in fake_ai.calls if c["schema"] == "AIClaimReview"]
-    generated_doc = review_inputs[0].split("<generated_document>")[1]
-    assert "Avery Quinlan" not in generated_doc
-    codes = {i["code"] for i in resume["issues"]}
-    assert "ai_unsupported_claim" not in codes  # the name can't be quoted, so the false finding is dropped
-    assert "internal_wording" in codes  # "total verified experience" is flagged
-    assert resume["content"]["skills"]  # an empty AI skill list falls back to the verified skills
-
-
 def test_skills_keep_the_resume_order_after_job_matches():
     from resumeflow.services.jobs import empty_requirements
     from resumeflow.services.generation import order_skills

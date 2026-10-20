@@ -77,9 +77,12 @@ def test_override_requires_reason(client, setup):
     assert ok.json()["selection_method"] == "manual_override"
 
 
-def test_duplicate_application_and_consent(client, setup):
-    assert create(client, setup).status_code == 201
-    assert create(client, setup).status_code == 409
+def test_another_application_for_the_same_candidate_and_consent(client, setup):
+    first = create(client, setup)
+    second = create(client, setup)  # the same candidate and job again: a new application with its own number
+    assert first.status_code == 201 and second.status_code == 201
+    assert first.json()["id"] != second.json()["id"]
+    assert second.json()["sequence_number"] == first.json()["sequence_number"] + 1
     marisol = setup["candidates"]["Marisol Venn"]
     client.patch(f"/candidates/{marisol}", json={"consent_confirmed": False})
     response = create(client, setup, "Marisol Venn", override_reason="test")
@@ -89,15 +92,13 @@ def test_duplicate_application_and_consent(client, setup):
 def test_review_edit_and_approval(client, setup):
     app = generated_app(client, setup)
     content = app["resume"]["content"]
-    content["experience"][0]["bullets"][0]["text"] += " for 250 clients"  # invented number
+    content["experience"][0]["bullets"][0]["text"] += " for 250 clients"
     edited = client.put(f"/applications/{app['id']}/documents/resume", json={"content": content}).json()
     assert edited["resume"]["version"] == 2
-    assert any(i["code"] == "unsupported_number" for i in edited["resume"]["issues"])
+    assert edited["resume"]["issues"] == []  # saved as written: there is no checking step
+    assert edited["resume"]["content"]["experience"][0]["bullets"][0]["text"].endswith(" for 250 clients")
 
-    blocked = client.post(f"/applications/{app['id']}/approve", json={})
-    assert blocked.status_code == 409
-    assert blocked.json()["error"]["code"] == "unresolved_issues"
-    approved = client.post(f"/applications/{app['id']}/approve", json={"acknowledge_warnings": True}).json()
+    approved = client.post(f"/applications/{app['id']}/approve", json={}).json()
     assert approved["status"] == "APPROVED"
     assert approved["resume"]["status"] == "approved"
 
@@ -295,32 +296,24 @@ def _tailoring(other_employer: str):
     return handler
 
 
-def test_ai_generation_is_constrained_and_validated(client, setup, secret_store, fake_ai):
+def test_ai_documents_are_saved_as_written_without_a_checking_step(client, setup, secret_store, fake_ai):
     secret_store.set("openai_api_key", "sk-test-key-123456")
     fake_ai.on("AIResumeTailoring", _tailoring("Front Range Payments Inc"))
     fake_ai.on(
         "AICoverLetter",
         lambda text: {"greeting": "Dear Acme Data Co team,", "paragraphs": [{"text": "I am applying to Acme Data Co. " * 30, "evidence_ids": ["YRS"]}], "closing": "Sincerely,"},
     )
-    fake_ai.on(
-        "AIClaimReview",
-        lambda text: {"issues": [{"quote": "previously worked at", "reason": "check", "severity": "warning"}, {"quote": "never said this", "reason": "x", "severity": "error"}]},
-    )
     app = generated_app(client, setup)
     resume = app["resume"]
     assert resume["mode"] == "ai"
     content = resume["content"]
-    assert "COBOL" not in content["skills"]
-    assert all("quantum" not in b["text"] for r in content["experience"] for b in r["bullets"])
-    # Another candidate's employer in the summary is fixed, not held: the profile-based summary is used instead.
-    assert "Front Range" not in content["summary"]
+    # The writer's summary is used as written: no fact-check call, no automatic fixes, nothing held.
+    assert content["summary"] == "Data engineer who previously worked at Front Range Payments Inc."
+    assert not [c for c in fake_ai.calls if c["schema"] == "AIClaimReview"]
     assert resume["issue_counts"]["error"] == 0
-    fixes = [i["message"] for i in resume["issues"] if i["code"] == "auto_fixed"]
-    assert any("another candidate" in m for m in fixes)
-    # The AI finding that quoted the old summary is recorded as removed; the hallucinated quote was discarded.
-    assert any("previously worked at" in m for m in fixes)
-    assert not [i for i in resume["issues"] if i["code"] == "ai_unsupported_claim"]
-    assert any("Removed" in i["message"] for i in resume["issues"] if i["code"] == "generation_note")
+    assert not [i for i in resume["issues"] if i["code"] in ("auto_fixed", "ai_unsupported_claim")]
+    # A bullet can still only come from the candidate's own roles: one citing an id that doesn't exist is left out.
+    assert all("quantum" not in b["text"] for r in content["experience"] for b in r["bullets"])
 
     # Candidate isolation in prompts: nothing about other candidates is sent.
     generation_inputs = " ".join(c["input"] for c in fake_ai.calls if c["schema"] in {"AIResumeTailoring", "AICoverLetter"})

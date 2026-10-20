@@ -127,14 +127,11 @@ export function DocumentsSection({ settings }: { settings: AppSettings }) {
         hint={
           settings.export_mode === "review"
             ? "Every application waits in the Review Queue until you approve it."
-            : settings.export_mode === "auto"
-              ? "Generate saves the resume and cover letter files straight away. If the checks find an error (e.g. a number that isn't in the candidate's resume), that application waits in the Review Queue instead."
-              : "Files are always saved straight away, even when the checks found errors. Check the Review Queue for flagged applications."
+            : "The resume and cover letter files are saved as soon as the documents are written."
         }
       >
-        <NativeSelect id="export-mode" className="sm:w-80" value={settings.export_mode} onChange={(e) => void save({ export_mode: e.target.value as AppSettings["export_mode"] })}>
-          <option value="auto">Save files automatically (hold any with errors)</option>
-          <option value="always">Always save files automatically</option>
+        <NativeSelect id="export-mode" className="sm:w-80" value={settings.export_mode === "review" ? "review" : "auto"} onChange={(e) => void save({ export_mode: e.target.value as AppSettings["export_mode"] })}>
+          <option value="auto">Save files automatically</option>
           <option value="review">Wait for my approval</option>
         </NativeSelect>
       </Row>

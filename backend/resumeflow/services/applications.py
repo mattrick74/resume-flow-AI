@@ -43,7 +43,7 @@ from resumeflow.services import experience
 from resumeflow.services.ai.service import AIService
 from resumeflow.services.candidates import candidate_readiness, get_candidate, verified_snapshot
 from resumeflow.services.files import MAX_PATH_LENGTH, replace_file, sanitize_component, sha256_bytes, write_unique_file
-from resumeflow.services.generation import deterministic_cover_letter, deterministic_resume, generate_documents, merge_section, run_concurrently
+from resumeflow.services.generation import generate_documents
 from resumeflow.services.ai.provider import AIError
 from resumeflow.services.inference import ai_skill_expansion, expand_snapshot, expansion_candidates, expansion_hints, semantic_evidence
 from resumeflow.services.matching import rejected_skills
@@ -53,17 +53,7 @@ from resumeflow.services.queue import JobContext, ProcessingQueue
 from resumeflow.services.render import render_cover_letter, render_resume
 from resumeflow.services.templates import resolve_style
 from resumeflow.services.settings import load_settings
-from resumeflow.services.validation import (
-    ai_claim_review,
-    auto_fix_cover_letter,
-    auto_fix_resume,
-    cover_plain_text,
-    issue,
-    load_other_candidates,
-    resume_plain_text,
-    validate_cover_letter,
-    validate_resume,
-)
+from resumeflow.services.validation import issue
 
 logger = logging.getLogger(__name__)
 CONTENT_MODELS = {DocumentType.RESUME: ResumeContent, DocumentType.COVER_LETTER: CoverLetterContent}
@@ -147,15 +137,7 @@ def create_application(
     if not ready["ready_for_matching"]:
         raise AppError(409, "candidate_not_ready", "Candidate profile isn't ready: " + "; ".join(ready["blockers"]))
 
-    existing = db.scalar(
-        select(Application).where(
-            Application.job_id == job.id,
-            Application.candidate_id == candidate.id,
-            Application.status.not_in([PipelineStatus.FAILED, PipelineStatus.REJECTED]),
-        )
-    )
-    if existing:
-        raise AppError(409, "duplicate_application", "This candidate already has an application for this job.", {"application_id": existing.id})
+    # A candidate may have several applications for the same job (each is a fresh generation with its own number).
 
     match = db.scalar(select(CandidateMatch).where(CandidateMatch.job_id == job.id, CandidateMatch.candidate_id == candidate.id))
     is_top = match is not None and match.rank == 1
@@ -297,7 +279,7 @@ def handle_generate(ai: AIService) -> Callable[[JobContext], None]:
             not_used = rejected_skills(db, [app.candidate_id]).get(app.candidate_id, set())
             previous_resume = _content(latest_document(db, app.id, DocumentType.RESUME), DocumentType.RESUME)
             previous_cover = _content(latest_document(db, app.id, DocumentType.COVER_LETTER), DocumentType.COVER_LETTER)
-            company, title, raw_jd, app_id, candidate_id = job.company, job.title, job.raw_jd, app.id, app.candidate_id
+            company, title, raw_jd, app_id = job.company, job.title, job.raw_jd, app.id
             settings = load_settings(db)
             instructions = combined_instructions(settings.writing_instructions, app.instructions)
             density = settings.bullet_density
@@ -331,69 +313,29 @@ def handle_generate(ai: AIService) -> Callable[[JobContext], None]:
             density=density,
         )
         ctx.check_cancelled()
-        ctx.progress(60)
+        ctx.progress(80)
 
-        with ctx.session() as db:
-            app = get_application(db, app_id)
-            _transition(app, PipelineStatus.VALIDATING, Actor.SYSTEM)
-            db.commit()
-            others, _ = load_other_candidates(db, candidate_id)
-        others.employers.discard((company or "").strip().lower())
-
-        do_resume = resume is not None and document in ("both", "resume")
-        do_cover = cover is not None and document in ("both", "cover_letter")
-        # The AI fact-checks of both documents run at the same time.
-        # reviews: dict[str, Callable[[], list]] = {}
-        # if mode == "ai" and do_resume:
-        #     reviews["resume"] = lambda: ai_claim_review(ai, resume_plain_text(resume, include_contact=False), snapshot, app_id, "resume", raw_jd)
-        # if mode == "ai" and do_cover:
-        #     reviews["cover"] = lambda: ai_claim_review(ai, cover_plain_text(cover), snapshot, app_id, "cover_letter", raw_jd)
-        # reviewed = run_concurrently(reviews)
-        # for _, error in reviewed.values():
-        #     if error is not None:
-        #         raise error
-
-        # Problems the checks find are fixed here rather than held for review: flagged wording goes back to the profile's
-        # own, and the profile-only document is the fallback. What was changed is recorded as notes.
+        # No checking step: the documents written from the API response are saved as they are and exported straight
+        # away (Settings → export automatically). The generation notes are kept with the version for reference.
         results = []
-        if do_resume:
-            fallback = deterministic_resume(snapshot, req, density)
-            if previous_resume is not None and section != "all":
-                fallback = merge_section(previous_resume, fallback, section)
-            # resume, issues = auto_fix_resume(resume, snapshot, others, raw_jd, reviewed.get("resume", ([], None))[0] or [], fallback)
-            resume, issues = auto_fix_resume(resume, snapshot, others, raw_jd, [], fallback)
-            results.append((DocumentType.RESUME, resume, issues))
-        if do_cover:
-            fallback_cover = deterministic_cover_letter(snapshot, req, company, title)
-            cover, issues = auto_fix_cover_letter(cover, snapshot, others, [], fallback_cover)
-            # cover, issues = auto_fix_cover_letter(cover, snapshot, others, reviewed.get("cover", ([], None))[0] or [], fallback_cover)
-            results.append((DocumentType.COVER_LETTER, cover, issues))
-        ctx.progress(90)
-
+        if resume is not None and document in ("both", "resume"):
+            results.append((DocumentType.RESUME, resume))
+        if cover is not None and document in ("both", "cover_letter"):
+            results.append((DocumentType.COVER_LETTER, cover))
         gap_notes = skill_gap_notes(snapshot.get("skill_gap_report") or []) + expansion_notes
         with ctx.session() as db:
             app = get_application(db, app_id)
-            for doc_type, content, issues in results:
+            for doc_type, content in results:
                 first = latest_document(db, app_id, doc_type) is None
-                note_issues = [issue("info", "generation_note", n, doc_type.value) for n in notes]
+                notes_for_doc = [issue("info", "generation_note", n, doc_type.value) for n in notes]
                 if doc_type == DocumentType.RESUME:
-                    note_issues += [issue("info", "skill_gap_report", n, "experience") for n in gap_notes]
-                _save_version(
-                    db,
-                    app_id,
-                    doc_type,
-                    content,
-                    issues + note_issues,
-                    "generated" if first else "regenerated",
-                    {"mode": mode, "section": section},
-                )
+                    notes_for_doc += [issue("info", "skill_gap_report", n, "experience") for n in gap_notes]
+                _save_version(db, app_id, doc_type, content, notes_for_doc, "generated" if first else "regenerated", {"mode": mode, "section": section})
             _transition(app, PipelineStatus.AWAITING_REVIEW, Actor.SYSTEM)
-            store_coverage(db, app)
             db.commit()
-            outcome = auto_export(db, ctx.queue, app)
-            if outcome == "held":
-                app.error = "Not exported automatically: the checks found errors. Review them, then approve and export."
-                db.commit()
+            auto_export(db, ctx.queue, app)
+            store_coverage(db, app)  # the Coverage tab's numbers; after the export is queued so it never delays the files
+            db.commit()
 
     return run
 
@@ -458,12 +400,7 @@ def edit_document(db: Session, app: Application, doc_type: DocumentType, content
     if app.status not in (PipelineStatus.AWAITING_REVIEW, PipelineStatus.APPROVED, PipelineStatus.EXPORTED):
         raise AppError(409, "not_editable", "Documents can only be edited after generation finishes.")
     model = CONTENT_MODELS[doc_type].model_validate(content)
-    snapshot = app.profile_snapshot_json or {}
-    job = db.get(Job, app.job_id)
-    others, _ = load_other_candidates(db, app.candidate_id)
-    others.employers.discard((job.company or "").strip().lower())
-    issues = validate_resume(model, snapshot, others, job.raw_jd) if doc_type == DocumentType.RESUME else validate_cover_letter(model, snapshot, others)
-    doc = _save_version(db, app.id, doc_type, model, issues, "edited", {"mode": "edited"})
+    doc = _save_version(db, app.id, doc_type, model, [], "edited", {"mode": "edited"})  # saved as written: no checking step
     if app.status != PipelineStatus.AWAITING_REVIEW:
         _transition(app, PipelineStatus.AWAITING_REVIEW, Actor.OPERATOR)
     db.flush()

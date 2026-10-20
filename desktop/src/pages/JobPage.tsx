@@ -159,11 +159,6 @@ function JobView({ job }: { job: JobDetail }) {
           {warning.message}
         </Alert>
       ))}
-      {existing.length > 0 && (
-        <Alert className="mb-3" title="An application already exists for this job" action={<Button asChild size="sm" variant="outline"><Link to={`/applications/${existing[0].id}`}>Open application</Link></Button>}>
-          Creating another for the same candidate is blocked; choosing a different candidate is allowed.
-        </Alert>
-      )}
 
       <div className="grid gap-5 xl:grid-cols-[minmax(0,420px)_1fr]">
         <div className="space-y-4">

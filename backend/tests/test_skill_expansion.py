@@ -323,8 +323,8 @@ def _expansion(text: str) -> dict:
 
 
 def _tailoring(text: str) -> dict:
-    """A writer that forgets the job skills: it rewrites the React bullet without React, leaves out the Kubernetes
-    bullet, and tries to add Terraform."""
+    """A writer that forgets the job skills: it rewrites the React bullet without React and leaves out the Kubernetes
+    bullet."""
     roles, bullets = _listing(text)
     portal = _find(bullets[HARBORVIEW], "self-service portal")
     lam = _find(bullets[HARBORVIEW], "Lambda functions")
@@ -340,7 +340,7 @@ def _tailoring(text: str) -> dict:
                 {"text": lam[1], "source_bullet_ids": [lam[0]]},
             ]},
             {"role_id": roles[CRESTLINE], "bullets": [
-                {"text": "Automated build and deployment pipelines for 12 services with Jenkins and Terraform", "source_bullet_ids": [pipes[0]]},
+                {"text": pipes[1], "source_bullet_ids": [pipes[0]]},
             ]},
             {"role_id": roles[PINECREST], "bullets": [{"text": zones[1], "source_bullet_ids": [zones[0]]}]},
         ],
@@ -349,20 +349,13 @@ def _tailoring(text: str) -> dict:
 
 def test_ai_bullets_are_checked_and_inserted_even_when_the_writer_drops_them(client, jordan, secret_store, fake_ai):
     """The AI proposes a bullet per missing skill in one call; Python keeps the employer the evidence ranking chose,
-    takes the proposals that pass the checks, inserts every placed skill even though the writer dropped them, and a
-    fact-check flag on an evidence-record bullet doesn't revert it."""
+    takes the proposals that pass the checks, and inserts every placed skill even though the writer dropped them."""
     secret_store.set("openai_api_key", "sk-test-key-123456")
     fake_ai.on("AISkillExpansion", _expansion)
     fake_ai.on("AIResumeTailoring", _tailoring)
     fake_ai.on(
         "AICoverLetter",
         lambda text: {"greeting": "Dear team,", "paragraphs": [{"text": "I build web platforms and cloud services.", "evidence_ids": []}, {"text": "I would welcome a conversation.", "evidence_ids": []}], "closing": "Sincerely,"},
-    )
-    fake_ai.on(
-        "AIClaimReview",
-        lambda text: {"issues": [{"quote": "Ran 30 microservices on Amazon EKS (Kubernetes)", "reason": "Kubernetes is not in the original resume", "severity": "error"}]}
-        if "Amazon EKS (Kubernetes)" in text
-        else {"issues": []},
     )
 
     app = _generate(client, jordan)
@@ -375,13 +368,11 @@ def test_ai_bullets_are_checked_and_inserted_even_when_the_writer_drops_them(cli
     assert inserted["React"] == "Built a React customer self-service portal with Next.js used by 40,000 monthly users"  # the AI's checked bullet
     assert inserted["Kubernetes"] == "Ran 30 microservices on Amazon EKS (Kubernetes), cutting deployment time by 50%"  # ranking kept Crestline
     assert "75%" not in inserted["PostgreSQL"] and "(PostgreSQL)" in inserted["PostgreSQL"]  # the proposal added a number
-    everything = json.dumps(app["resume"]["content"])
-    assert "Terraform" not in everything  # neither the AI's claim nor the writer's addition got in
+    assert "Terraform" not in json.dumps(app["resume"]["content"])  # the AI's unconfirmed claim didn't get in
 
     _assert_pdf(app, inserted)
 
     issues = app["resume"]["issues"]
-    assert any(i["code"] == "auto_fixed" and "Amazon EKS (Kubernetes)" in i["message"] and "evidence record" in i["message"] for i in issues)
     report = _gap_report(app)
     assert report["Terraform"]["status"] == "transferable" and not report["Terraform"]["resolved"]  # emphasised, not claimed
     notes = " ".join(i["message"] for i in issues if i["code"] == "skill_gap_report")

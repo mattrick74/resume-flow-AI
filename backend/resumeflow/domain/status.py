@@ -28,7 +28,8 @@ JOB_TRANSITIONS: dict[S, frozenset[S]] = {
 
 APPLICATION_TRANSITIONS: dict[S, frozenset[S]] = {
     S.MATCHED: frozenset({S.GENERATING, S.FAILED}),
-    S.GENERATING: frozenset({S.VALIDATING, S.FAILED}),
+    # Documents go straight from writing to the next step (no checking step); VALIDATING stays for older data.
+    S.GENERATING: frozenset({S.AWAITING_REVIEW, S.VALIDATING, S.FAILED}),
     S.VALIDATING: frozenset({S.AWAITING_REVIEW, S.FAILED}),
     S.AWAITING_REVIEW: frozenset({S.APPROVED, S.GENERATING}),
     # Editing approved/exported content sends it back for review; it is never silently changed.

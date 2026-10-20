@@ -52,7 +52,7 @@ export interface AppSettings {
   /** A built-in template ("professional", "compact") or "custom:<id>" for one copied from a resume. */
   resume_template: string;
   pdf_converter: "auto" | "libreoffice" | "word" | "none";
-  /** review: wait for Approve. auto: export right after generating unless the checks found an error. always: export regardless. */
+  /** review: wait for Approve. auto / always: export as soon as the documents are written. */
   export_mode: "review" | "auto" | "always";
   /** pdf: save PDFs only (the Word file is kept only if no PDF can be made). pdf_docx: save both. */
   output_formats: "pdf" | "pdf_docx";

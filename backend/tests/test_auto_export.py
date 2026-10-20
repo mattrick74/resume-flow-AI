@@ -25,9 +25,9 @@ def test_generate_exports_automatically_by_default(client, setup):
     assert _metadata(done)["review_status"] == "AUTO_APPROVED"  # never recorded as a person's review
 
 
-def test_problems_are_fixed_and_exported_automatically(client, setup, secret_store, fake_ai):
-    """What the checks flag is repaired instead of holding the application: the leaked employer goes, the flagged
-    cover-letter sentence goes, and the files are exported without a review step."""
+def test_written_documents_are_exported_straight_away(client, setup, secret_store, fake_ai):
+    """As soon as the OpenAI responses arrive the documents are saved and exported: no fact-check call, no automatic
+    fixes, no review step."""
     secret_store.set("openai_api_key", "sk-test-key-123456")
     fake_ai.on("AIResumeTailoring", _tailoring("Front Range Payments Inc"))  # leaks another candidate's employer
     letter = [
@@ -36,22 +36,17 @@ def test_problems_are_fixed_and_exported_automatically(client, setup, secret_sto
         "I would welcome the chance to discuss how I can help Acme Data Co.",
     ]
     fake_ai.on("AICoverLetter", lambda text: {"greeting": "Dear team,", "paragraphs": [{"text": p, "evidence_ids": []} for p in letter], "closing": "Sincerely,"})
-    fake_ai.on(
-        "AIClaimReview",
-        lambda text: {"issues": [{"quote": "clear communication", "reason": "Not established by the evidence", "severity": "error"}]} if "clear communication" in text else {"issues": []},
-    )
 
     client.patch("/settings", json={"export_mode": "auto"})
     app = create(client, setup).json()
     drain(client)
     done = client.get(f"/applications/{app['id']}").json()
     assert done["status"] == "EXPORTED" and done["approved_by"] == "automatic" and not done["error"]
-    assert done["resume"]["issue_counts"]["error"] == 0 and done["cover_letter"]["issue_counts"]["error"] == 0
-    assert "Front Range" not in done["resume"]["content"]["summary"]
+    writing = sorted(c["schema"] for c in fake_ai.calls if c["schema"] != "AISkillExpansion")
+    assert writing == ["AICoverLetter", "AIResumeTailoring"]  # the two writing calls only: no fact-check
     body = " ".join(p["text"] for p in done["cover_letter"]["content"]["paragraphs"])
-    assert "clear communication" not in body and "Spark and Airflow pipelines" in body  # only the flagged sentence went
-    notes = [i["message"] for i in done["cover_letter"]["issues"] if i["code"] == "auto_fixed"]
-    assert any("clear communication" in n for n in notes)
+    assert body == " ".join(letter)  # the cover letter exactly as the API returned it
+    assert {f["type"] for f in done["files"] if f["exists"]} >= {"resume", "cover_letter", "metadata"}
 
 
 def test_pdf_only_saves_no_word_files(client, setup, monkeypatch):
@@ -160,20 +155,6 @@ def test_certifications_left_out_are_listed(client):
     client.patch(f"/candidates/{candidate['id']}", json={"profile": profile})
     warnings = client.get(f"/candidates/{candidate['id']}").json()["readiness"]["warnings"]
     assert any("certification(s) aren't verified" in w for w in warnings)
-
-
-def test_fact_check_sees_the_job_so_role_descriptions_are_not_flagged(client, setup, secret_store, fake_ai):
-    secret_store.set("openai_api_key", "sk-test-key-123456")
-    fake_ai.on("AIResumeTailoring", _tailoring("Northwind Analytics Inc"))
-    fake_ai.on("AICoverLetter", lambda text: {"greeting": "Dear team,", "paragraphs": [{"text": "Acme Data Co's focus on analytics pipelines fits my work.", "evidence_ids": []}], "closing": "Sincerely,"})
-    fake_ai.on("AIClaimReview", lambda text: {"issues": []})
-    client.patch("/settings", json={"export_mode": "auto"})
-    app = create(client, setup).json()
-    drain(client)
-    reviews = [c for c in fake_ai.calls if c["schema"] == "AIClaimReview"]
-    assert reviews and all("<job_description>" in c["input"] for c in reviews)
-    assert all("Only claims about the candidate count" in c["instructions"] for c in reviews)
-    assert client.get(f"/applications/{app['id']}").json()["status"] == "EXPORTED"
 
 
 def test_memory_secret_backend_never_touches_credential_manager(config):

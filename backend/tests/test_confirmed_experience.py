@@ -234,9 +234,8 @@ def test_additions_survive_reading_the_resume_again(client, avery):
     assert record["status"] == "approved" and record["role_found"] and record["role"].startswith(avery["northwind"]["title"])
 
 
-def test_ai_drafts_from_the_description_and_cannot_move_tools_between_roles(client, avery, secret_store, fake_ai):
-    """GEN-04 with AI: the bullet is written from the operator's description; a tailored rewrite that names a
-    technology the role's evidence doesn't show is put back to the source wording."""
+def test_ai_drafts_from_the_description(client, avery, secret_store, fake_ai):
+    """With AI, the bullet is written from the operator's description and the approved bullet reaches the resume."""
     job = _job(client)  # analyzed offline, before the key is set
     secret_store.set("openai_api_key", "sk-test-key-123456")
 
@@ -266,21 +265,17 @@ def test_ai_drafts_from_the_description_and_cannot_move_tools_between_roles(clie
             "roles": [
                 {"role_id": role_ids[0], "bullets": [
                     {"text": "Ran Spark data pipelines on Kubernetes for the analytics platform", "source_bullet_ids": [addition]},
-                    {"text": "Built event pipelines with Redis caching", "source_bullet_ids": [original]},  # Redis: never confirmed here
+                    {"text": "Built Spark and Airflow event pipelines on AWS", "source_bullet_ids": [original]},
                 ]},
             ],
         }
 
     fake_ai.on("AIResumeTailoring", tailoring)
     fake_ai.on("AICoverLetter", lambda text: {"greeting": "Dear team,", "paragraphs": [{"text": "I am applying to Acme Data Co.", "evidence_ids": []}], "closing": "Sincerely,"})
-    fake_ai.on("AIClaimReview", lambda text: {"issues": []})
     app = _generate(client, job["id"], avery["id"])
     texts = [b["text"] for b in _bullets(app)]
     assert "Ran Spark data pipelines on Kubernetes for the analytics platform" in texts
-    assert not any("Redis" in t for t in texts)
-    notes = [i["message"] for i in app["resume"]["issues"] if i["code"] == "generation_note"]
-    assert any("not confirmed for that role" in n for n in notes)
-    assert not any(i["code"] == "unsupported_tool" for i in app["resume"]["issues"])
+    assert "Built Spark and Airflow event pipelines on AWS" in texts
 
 
 def test_instant_by_default(client, avery, secret_store, fake_ai):
@@ -345,14 +340,14 @@ def test_ticking_an_employer_lists_the_skill_under_that_employer(client, avery):
     assert "Technologies: " in text and "Kubernetes" in text
 
 
-def test_a_technology_line_cannot_name_unconfirmed_tools(client, avery):
-    """An edited Technologies line naming a tool nobody confirmed for that employer is flagged."""
+def test_an_edited_technology_line_is_saved_as_written(client, avery):
+    """Edits are saved as written: there is no checking step."""
     job = _job(client)
     app = _generate(client, job["id"], avery["id"])
     content = app["resume"]["content"]
     content["experience"][0]["technologies"] = ["GraphQL"]
     edited = client.put(f"/applications/{app['id']}/documents/resume", json={"content": content}).json()
-    assert any(i["code"] == "unsupported_tool" and i["location"].endswith(".technologies") for i in edited["resume"]["issues"])
+    assert edited["resume"]["content"]["experience"][0]["technologies"] == ["GraphQL"] and edited["resume"]["issues"] == []
 
 
 def test_dotted_skill_names_match():

@@ -100,7 +100,7 @@ describe("matching", () => {
 });
 
 describe("review", () => {
-  it("shows validation errors inline and requires acknowledgement to approve", async () => {
+  it("has no checking or improve step and approves in one click", async () => {
     let approved: unknown = null;
     mockBackend({
       override: (call) => {
@@ -114,13 +114,13 @@ describe("review", () => {
     });
     renderApp("/applications/a1");
     expect(await screen.findByText("Built pipelines for 250 clients")).toBeInTheDocument();
+    expect(screen.queryByRole("tab", { name: /Checks/ })).not.toBeInTheDocument();
+    expect(screen.queryByRole("tab", { name: /Improve/ })).not.toBeInTheDocument();
+    const steps = within(screen.getByRole("list", { name: "Progress" }));
+    expect(steps.queryByText("Review")).not.toBeInTheDocument();
+    expect(steps.queryByText("Approved")).not.toBeInTheDocument();
     await userEvent.click(screen.getByRole("button", { name: "Approve" }));
-    const dialog = await screen.findByRole("dialog");
-    expect(within(dialog).getByText("Numbers not in the source bullet: 250")).toBeInTheDocument();
-    const approveAnyway = within(dialog).getByRole("button", { name: "Approve anyway" });
-    expect(approveAnyway).toBeDisabled();
-    await userEvent.click(within(dialog).getByRole("checkbox"));
-    await userEvent.click(approveAnyway);
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
     await waitFor(() => expect(approved).toEqual({ acknowledge_warnings: true }));
   });
 });

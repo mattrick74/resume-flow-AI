@@ -2,7 +2,6 @@ import { useQuery } from "@tanstack/react-query";
 import {
   ArrowLeft,
   BadgeCheck,
-  BadgePlus,
   Ban,
   Check,
   ChevronDown,
@@ -25,17 +24,15 @@ import { toast } from "sonner";
 import { ErrorState, describeError } from "@/components/common/ErrorState";
 import { StatusBadge } from "@/components/common/StatusBadge";
 import { CoveragePanel } from "@/components/experience/CoveragePanel";
-import { ImprovePanel, useRegenerateWithAdditions } from "@/components/experience/ImprovePanel";
+import { useRegenerateWithAdditions } from "@/components/experience/ImprovePanel";
 import { GateList } from "@/components/jobs/MatchCard";
 import { ScoreBreakdown } from "@/components/jobs/ScoreBreakdown";
 import { CoverLetterEditor, CoverLetterPreview, wordCount } from "@/components/review/CoverLetterDocument";
-import { IssueCounts, IssueList } from "@/components/review/IssueList";
 import { ResumeEditor, ResumePreview } from "@/components/review/ResumeDocument";
 import { Alert } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
-import { Checkbox } from "@/components/ui/checkbox";
 import { InstructionsField } from "@/components/common/InstructionsField";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuLabel, DropdownMenuSeparator, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
 import { Modal } from "@/components/ui/modal";
@@ -62,10 +59,9 @@ const REGENERATE_OPTIONS: Regenerate[] = [
   { document: "cover_letter", section: "all", label: "Cover letter" },
 ];
 
+// Generated documents are exported as soon as they're written: no review or approval steps.
 const STEPS: { label: string; states: PipelineStatus[] }[] = [
-  { label: "Generate", states: ["MATCHED", "GENERATING", "VALIDATING", "FAILED"] },
-  { label: "Review", states: ["AWAITING_REVIEW"] },
-  { label: "Approved", states: ["APPROVED"] },
+  { label: "Generate", states: ["MATCHED", "GENERATING", "VALIDATING", "AWAITING_REVIEW", "APPROVED", "FAILED"] },
   { label: "Exported", states: ["EXPORTED"] },
   { label: "Submitted", states: ["SUBMITTED", "INTERVIEW", "OFFER", "REJECTED"] },
 ];
@@ -81,8 +77,6 @@ export function ApplicationPage() {
 function ApplicationView({ app }: { app: ApplicationDetail }) {
   const id = app.id;
   const onError = (title: string) => (error: unknown) => toast.error(title, { description: describeError(error) });
-  const [approveOpen, setApproveOpen] = useState(false);
-  const [acknowledged, setAcknowledged] = useState(false);
   const [regenerate, setRegenerate] = useState<Regenerate | null>(null);
   const [outcome, setOutcome] = useState<Outcome | null>(null);
 
@@ -100,20 +94,11 @@ function ApplicationView({ app }: { app: ApplicationDetail }) {
 
   const active = app.processing.find((p) => p.status === "queued" || p.status === "running");
   const failed = app.processing.find((p) => p.status === "failed");
-  const errors = [...(app.resume?.issues ?? []), ...(app.cover_letter?.issues ?? [])].filter((i) => i.severity === "error");
   const generating = app.status === "GENERATING" || app.status === "VALIDATING";
   const canRegenerate = ["AWAITING_REVIEW", "APPROVED", "EXPORTED", "FAILED"].includes(app.status);
   const stepIndex = STEPS.findIndex((s) => s.states.includes(app.status));
 
-  const doApprove = (ack: boolean) =>
-    approve.mutate(ack, {
-      onSuccess: () => {
-        toast.success("Documents approved");
-        setApproveOpen(false);
-        setAcknowledged(false);
-      },
-      onError: onError("Couldn't approve"),
-    });
+  const doApprove = () => approve.mutate(true, { onSuccess: () => toast.success("Documents approved"), onError: onError("Couldn't approve") });
 
   return (
     <div className="pb-10">
@@ -165,7 +150,7 @@ function ApplicationView({ app }: { app: ApplicationDetail }) {
             </DropdownMenu>
           )}
           {app.status === "AWAITING_REVIEW" && (
-            <Button size="sm" disabled={approve.isPending} onClick={() => (errors.length ? setApproveOpen(true) : doApprove(false))}>
+            <Button size="sm" disabled={approve.isPending} onClick={doApprove}>
               <BadgeCheck /> Approve
             </Button>
           )}
@@ -222,7 +207,7 @@ function ApplicationView({ app }: { app: ApplicationDetail }) {
           <LoaderCircle className="size-4 animate-spin text-primary" aria-hidden />
           <div className="flex-1">
             <div className="text-sm font-medium">
-              {active.job_type === "generate_documents" ? (app.status === "VALIDATING" ? "Checking every claim against the candidate's profile…" : "Writing tailored documents…") : active.job_type === "export_application" ? "Writing files…" : "Converting to PDF…"}
+              {active.job_type === "generate_documents" ? "Writing tailored documents…" : active.job_type === "export_application" ? "Writing files…" : "Converting to PDF…"}
             </div>
             <Progress value={active.progress} className="mt-2 h-1.5" aria-label="Progress" />
             {active.retry_count > 0 && <div className="mt-1 text-xs text-muted-foreground">Retry {active.retry_count}: {active.error}</div>}
@@ -284,7 +269,7 @@ function ApplicationView({ app }: { app: ApplicationDetail }) {
       {generating && !app.resume ? (
         <Card className="flex h-80 flex-col items-center justify-center gap-3 text-center">
           <LoaderCircle className="size-6 animate-spin text-primary" aria-hidden />
-          <div className="text-sm text-muted-foreground">Documents appear here as soon as generation and validation finish.</div>
+          <div className="text-sm text-muted-foreground">Documents appear here as soon as they're written.</div>
         </Card>
       ) : (
         <Tabs defaultValue="documents">
@@ -292,18 +277,12 @@ function ApplicationView({ app }: { app: ApplicationDetail }) {
             <TabsTrigger value="documents">
               <FileText /> Documents
             </TabsTrigger>
-            <TabsTrigger value="issues">
-              Checks {errors.length > 0 && <span className="rounded bg-destructive/15 px-1.5 text-[11px] text-destructive">{errors.length}</span>}
-            </TabsTrigger>
             <TabsTrigger value="files">
               <FolderOpen /> Files
             </TabsTrigger>
             <TabsTrigger value="match">Match</TabsTrigger>
             <TabsTrigger value="coverage">
               <Gauge /> Coverage
-            </TabsTrigger>
-            <TabsTrigger value="improve">
-              <BadgePlus /> Improve
             </TabsTrigger>
           </TabsList>
           <TabsContent value="documents">
@@ -313,18 +292,6 @@ function ApplicationView({ app }: { app: ApplicationDetail }) {
               left={<DocumentPane app={app} type="resume" />}
               right={<DocumentPane app={app} type="cover_letter" />}
             />
-          </TabsContent>
-          <TabsContent value="issues">
-            <div className="grid gap-4 lg:grid-cols-2">
-              <Card className="p-5">
-                <h3 className="mb-3 text-sm font-semibold">Resume {app.resume && <span className="font-normal text-muted-foreground">v{app.resume.version}</span>}</h3>
-                <IssueList issues={app.resume?.issues ?? []} empty="Every claim is supported by the candidate's profile." />
-              </Card>
-              <Card className="p-5">
-                <h3 className="mb-3 text-sm font-semibold">Cover letter {app.cover_letter && <span className="font-normal text-muted-foreground">v{app.cover_letter.version}</span>}</h3>
-                <IssueList issues={app.cover_letter?.issues ?? []} empty="Every claim is supported by the candidate's profile." />
-              </Card>
-            </div>
           </TabsContent>
           <TabsContent value="files">
             <FilesPanel app={app} />
@@ -364,34 +331,9 @@ function ApplicationView({ app }: { app: ApplicationDetail }) {
           <TabsContent value="coverage">
             <CoveragePanel key={`${app.resume?.version}`} applicationId={app.id} />
           </TabsContent>
-          <TabsContent value="improve">
-            <ImprovePanel app={app} />
-          </TabsContent>
         </Tabs>
       )}
 
-      <Modal
-        open={approveOpen}
-        onOpenChange={setApproveOpen}
-        title={`Approve with ${errors.length} unresolved error${errors.length === 1 ? "" : "s"}?`}
-        description="These were flagged by the claim checks. Editing the documents to fix them is safer."
-        footer={
-          <>
-            <Button variant="ghost" onClick={() => setApproveOpen(false)}>
-              Go back and edit
-            </Button>
-            <Button variant="destructive" disabled={!acknowledged || approve.isPending} onClick={() => doApprove(true)}>
-              Approve anyway
-            </Button>
-          </>
-        }
-      >
-        <IssueList issues={errors} />
-        <label className="mt-4 flex items-start gap-2 text-sm">
-          <Checkbox checked={acknowledged} onCheckedChange={(v) => setAcknowledged(v === true)} className="mt-0.5" />
-          I've checked these statements against the candidate and they are true.
-        </label>
-      </Modal>
       <Modal
         open={regenerate !== null}
         onOpenChange={(open) => !open && setRegenerate(null)}
@@ -485,7 +427,7 @@ function DocumentPane({ app, type }: { app: ApplicationDetail; type: DocType }) 
     save.mutate(draft, {
       onSuccess: (detail) => {
         const doc = type === "resume" ? detail.resume : detail.cover_letter;
-        toast.success(`Saved as version ${doc?.version}`, { description: doc && doc.issue_counts.error ? `${doc.issue_counts.error} issue(s) need attention` : "All checks passed" });
+        toast.success(`Saved as version ${doc?.version}`);
         setEditing(false);
         setDraft(null);
       },
@@ -501,9 +443,9 @@ function DocumentPane({ app, type }: { app: ApplicationDetail; type: DocType }) 
   else if (shown)
     body =
       type === "resume" ? (
-        <ResumePreview content={shown.content as ResumeContent} issues={shown.issues} />
+        <ResumePreview content={shown.content as ResumeContent} issues={[]} />
       ) : (
-        <CoverLetterPreview content={shown.content as CoverLetterContent} issues={shown.issues} />
+        <CoverLetterPreview content={shown.content as CoverLetterContent} issues={[]} />
       );
 
   return (
@@ -539,7 +481,6 @@ function DocumentPane({ app, type }: { app: ApplicationDetail; type: DocType }) 
             )}
           </Badge>
         )}
-        {shown && <IssueCounts counts={shown.issue_counts} />}
         {type === "cover_letter" && shown && <span className="text-xs text-muted-foreground tabular-nums">{wordCount(shown.content as CoverLetterContent)} words</span>}
         <div className="ml-auto flex gap-1">
           {editing ? (
