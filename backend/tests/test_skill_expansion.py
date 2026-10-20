@@ -330,7 +330,7 @@ def _tailoring(text: str) -> dict:
     lam = _find(bullets[HARBORVIEW], "Lambda functions")
     pipes = _find(bullets[CRESTLINE], "pipelines")
     zones = _find(bullets[PINECREST], "delivery zones")
-    return {
+    result = {
         "headline": "Senior Software Engineer",
         "summary": "Software engineer with 11 years building web platforms and cloud services.",
         "skill_order": ["Python", "JavaScript", "Docker"],
@@ -345,13 +345,14 @@ def _tailoring(text: str) -> dict:
             {"role_id": roles[PINECREST], "bullets": [{"text": zones[1], "source_bullet_ids": [zones[0]]}]},
         ],
     }
+    result["placements"] = _expansion(text)["placements"]
+    return result
 
 
 def test_ai_bullets_are_checked_and_inserted_even_when_the_writer_drops_them(client, jordan, secret_store, fake_ai):
     """The AI proposes a bullet per missing skill in one call; Python keeps the employer the evidence ranking chose,
     takes the proposals that pass the checks, and inserts every placed skill even though the writer dropped them."""
     secret_store.set("openai_api_key", "sk-test-key-123456")
-    fake_ai.on("AISkillExpansion", _expansion)
     fake_ai.on("AIResumeTailoring", _tailoring)
     fake_ai.on(
         "AICoverLetter",
@@ -362,7 +363,9 @@ def test_ai_bullets_are_checked_and_inserted_even_when_the_writer_drops_them(cli
     assert app["status"] == "EXPORTED" and app["approved_by"] == "automatic" and not app["error"], app.get("error")
     assert app["resume"]["mode"] == "ai"
     assert app["resume"]["issue_counts"]["error"] == 0, app["resume"]["issues"]
-    assert [c["schema"] for c in fake_ai.calls].count("AISkillExpansion") == 1  # every missing skill in one call
+    schemas = [c["schema"] for c in fake_ai.calls]
+    assert schemas.count("AIResumeTailoring") == 1
+    assert "AISkillExpansion" not in schemas  # placement and writing share one response
 
     inserted = _assert_distributed(app, jordan["profile"])
     assert inserted["React"] == "Built a React customer self-service portal with Next.js used by 40,000 monthly users"  # the AI's checked bullet

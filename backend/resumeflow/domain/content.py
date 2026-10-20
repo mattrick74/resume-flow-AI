@@ -76,11 +76,25 @@ class AITailoredRole(BaseModel):
     bullets: list[AITailoredBullet]
 
 
+class AISkillPlacement(BaseModel):
+    """One missing job skill: where the candidate's experience shows it and the bullet that says so (v1.8.5)."""
+
+    skill: str = Field(description="The job skill, exactly as listed in <missing_job_skills>")
+    employer_id: str | None = Field(description="The R-... id of the employer whose bullets show it best, or null")
+    evidence_ids: list[str] = Field(description="B-... ids of that employer's bullets that show it; the first is the one rewritten")
+    classification: Literal["equivalent", "confirmed", "related", "none"]
+    bullet: str = Field(description="The first cited bullet rewritten to name the skill; empty unless equivalent or confirmed")
+    reason: str
+
+
 class AIResumeTailoring(BaseModel):
     headline: str | None
     summary: str
     skill_order: list[str] = Field(description="Verified skills only, most relevant first")
     roles: list[AITailoredRole]
+    placements: list[AISkillPlacement] = Field(
+        description="One evidence-based placement decision for every skill in <missing_job_skills>"
+    )
 
 
 class AICoverParagraph(BaseModel):
@@ -102,22 +116,6 @@ class AIClaimIssue(BaseModel):
 
 class AIClaimReview(BaseModel):
     issues: list[AIClaimIssue]
-
-
-class AISkillPlacement(BaseModel):
-    """One missing job skill: where the candidate's experience shows it and the bullet that says so (v1.8.5)."""
-
-    skill: str = Field(description="The job skill, exactly as listed in <missing_job_skills>")
-    employer_id: str | None = Field(description="The R-... id of the employer whose bullets show it best, or null")
-    evidence_ids: list[str] = Field(description="B-... ids of that employer's bullets that show it; the first is the one rewritten")
-    classification: Literal["equivalent", "confirmed", "related", "none"]
-    bullet: str = Field(description="The first cited bullet rewritten to name the skill; empty unless equivalent or confirmed")
-    reason: str
-
-
-class AISkillExpansion(BaseModel):
-    placements: list[AISkillPlacement]
-
 
 Section = Literal["all", "summary", "skills", "experience"]
 DocumentChoice = Literal["both", "resume", "cover_letter"]

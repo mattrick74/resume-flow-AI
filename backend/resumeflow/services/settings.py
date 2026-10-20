@@ -73,7 +73,7 @@ class AppSettings(BaseModel):
     daily_budget_usd: float | None = Field(default=None, ge=0)
     monthly_budget_usd: float | None = Field(default=None, ge=0)
     ai_extract_on_import: bool = True
-    semantic_matching: bool = True
+    semantic_matching: bool = False
     match_weights: MatchWeights = Field(default_factory=MatchWeights)
     resume_template: str = Field(default=DEFAULT_TEMPLATE, max_length=60, description="A built-in template name or custom:<id>")
     pdf_converter: PdfConverter = "auto"

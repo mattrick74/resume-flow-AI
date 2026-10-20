@@ -291,6 +291,7 @@ def _tailoring(other_employer: str):
                     {"text": "Invented a quantum scheduler", "source_bullet_ids": ["B-nonexistent"]},
                 ]},
             ],
+            "placements": [],
         }
 
     return handler

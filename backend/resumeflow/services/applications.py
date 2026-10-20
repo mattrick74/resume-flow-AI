@@ -36,7 +36,6 @@ from resumeflow.domain.enums import (
     ProcessingJobType,
     SelectionMethod,
 )
-from resumeflow.domain.skills import normalize_skill
 from resumeflow.domain.status import Actor, InvalidTransition, check_application_transition
 from resumeflow.errors import AppError
 from resumeflow.services import experience
@@ -44,8 +43,7 @@ from resumeflow.services.ai.service import AIService
 from resumeflow.services.candidates import candidate_readiness, get_candidate, verified_snapshot
 from resumeflow.services.files import MAX_PATH_LENGTH, replace_file, sanitize_component, sha256_bytes, write_unique_file
 from resumeflow.services.generation import generate_documents
-from resumeflow.services.ai.provider import AIError
-from resumeflow.services.inference import ai_skill_expansion, expand_snapshot, expansion_candidates, expansion_hints, semantic_evidence
+from resumeflow.services.inference import semantic_evidence
 from resumeflow.services.matching import rejected_skills
 from resumeflow.services.jobs import get_job, requirements_of
 from resumeflow.services.pdf import PdfConversionError, convert_documents_to_pdf, resolve_converter
@@ -286,20 +284,11 @@ def handle_generate(ai: AIService) -> Callable[[JobContext], None]:
             db.commit()
         ctx.progress(5)
 
-        # v1.8.5: every missing job skill is searched for in all of the candidate's employment records in one pass
-        # (plus one batched AI call when AI is on); one an employer's own work shows is named in that employer's
-        # bullets, related work is emphasised for the rest, and the outcome is kept as the application's gap report.
-        # Skills the operator said the candidate hasn't used are never added. Nothing here asks the operator anything.
-        snapshot, expansion_notes = expand_with_ai(ai, base, req, semantic, not_used, raw_jd, app_id)
-        if snapshot != base:
-            with ctx.session() as db:
-                get_application(db, app_id).profile_snapshot_json = snapshot  # edits are checked against the same record
-                db.commit()
-        ctx.progress(10)
-
-        resume, cover, notes, mode = generate_documents(
+        # Resume generation now returns its evidence-checked skill placements in the same response. The cover-letter
+        # request runs concurrently from the original evidence and does not wait for those resume-specific decisions.
+        resume, cover, notes, mode, snapshot, expansion_notes = generate_documents(
             ai,
-            snapshot,
+            base,
             req,
             company=company,
             job_title=title,
@@ -311,9 +300,16 @@ def handle_generate(ai: AIService) -> Callable[[JobContext], None]:
             previous_cover=previous_cover,
             instructions=instructions,
             density=density,
+            semantic=semantic,
+            exclude=not_used,
         )
         ctx.check_cancelled()
         ctx.progress(80)
+
+        if snapshot != base:
+            with ctx.session() as db:
+                get_application(db, app_id).profile_snapshot_json = snapshot  # edits are checked against the same record
+                db.commit()
 
         # No checking step: the documents written from the API response are saved as they are and exported straight
         # away (Settings → export automatically). The generation notes are kept with the version for reference.
@@ -338,30 +334,6 @@ def handle_generate(ai: AIService) -> Callable[[JobContext], None]:
             db.commit()
 
     return run
-
-
-def expand_with_ai(
-    ai: AIService | None,
-    base: dict[str, Any],
-    req: Any,
-    semantic: dict[str, str],
-    not_used: set[str],
-    raw_jd: str,
-    app_id: str,
-) -> tuple[dict[str, Any], list[str]]:
-    """The application's evidence record with every missing job skill handled (see services/inference.py). With AI on,
-    one batched call proposes a bullet per skill; Python checks each one and falls back to its own wording."""
-    proposals = None
-    notes: list[str] = []
-    skills = expansion_candidates(base, req, not_used)
-    searched = {r["normalized"] for r in base.get("skill_gap_report") or []}  # this evidence record was searched already
-    if skills and ai is not None and ai.available() and not {normalize_skill(s) for s in skills} <= searched:
-        try:
-            proposals = ai_skill_expansion(ai, base, req, skills, expansion_hints(base, req, semantic, not_used), app_id)
-        except AIError as exc:
-            notes.append(f"AI skill search skipped ({exc}); used the automatic evidence search only.")
-    snapshot, merge_notes = expand_snapshot(base, req, semantic, not_used, proposals, raw_jd)
-    return snapshot, notes + merge_notes
 
 
 def skill_gap_notes(report: list[dict[str, Any]]) -> list[str]:

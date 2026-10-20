@@ -268,6 +268,7 @@ def test_ai_drafts_from_the_description(client, avery, secret_store, fake_ai):
                     {"text": "Built Spark and Airflow event pipelines on AWS", "source_bullet_ids": [original]},
                 ]},
             ],
+            "placements": [],
         }
 
     fake_ai.on("AIResumeTailoring", tailoring)

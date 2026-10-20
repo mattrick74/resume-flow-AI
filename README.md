@@ -50,7 +50,7 @@ for the architecture, API, test strategy and remaining risks.
    work shows it — a more specific technology (Amazon EKS → Kubernetes, Next.js → React, PostGIS → PostgreSQL), an unambiguous
    description ("Lambda functions triggered by S3" → AWS Lambda) or the AI semantic check — the employer with the most and
    strongest evidence is chosen and one of its bullets names the skill ("Ran 30 microservices on Amazon EKS (Kubernetes)…"); with
-   AI on, one batched call writes that bullet and Python checks it (no new numbers, tools or claims) before using it. The bullet
+   AI on, the resume-writing response also writes that bullet and Python checks it (no new numbers, tools or claims) before using it—there is no separate skill-expansion request. The bullet
    is inserted under that employer even if the writer leaves it out, survives the checks and automatic fixes, and reaches the
    PDF; the skill also goes on that employer's Technologies line and in Skills. Related-but-different work (Docker on ECS for
    Kubernetes) is put first but never claimed, and skills nothing shows are not added. Each resume lists what was added where

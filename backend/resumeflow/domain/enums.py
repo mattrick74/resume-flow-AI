@@ -105,7 +105,8 @@ class GenerationOperation(StrEnum):
     RESUME_PARSE = "resume_parse"
     # Turning the operator's confirmed work context into a resume bullet (v1.8).
     EXPERIENCE_DRAFTING = "experience_drafting"
-    # Missing job skills → the employer whose experience shows each one, with a bullet naming it (v1.8.5).
+    # Historical operation value retained for existing GenerationRun analytics. New placement decisions are returned
+    # by RESUME_GENERATION instead of using a separate request.
     SKILL_EXPANSION = "skill_expansion"
 
 

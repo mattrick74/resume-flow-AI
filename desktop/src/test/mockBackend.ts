@@ -14,7 +14,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
   daily_budget_usd: null,
   monthly_budget_usd: null,
   ai_extract_on_import: true,
-  semantic_matching: true,
+  semantic_matching: false,
   match_weights: { mandatory_skills: 35, experience: 25, seniority: 15, preferred_skills: 10, industry: 10, other: 5 },
   resume_template: "professional",
   pdf_converter: "auto",

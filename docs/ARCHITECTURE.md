@@ -201,16 +201,17 @@ candidate's work: every new fact comes from the operator (`services/experience.p
   `unsupported_tool` and the auto-fix restores the computed line. Skill names keep a leading dot (".NET" was stored as "net";
   migration `0008` re-normalizes stored names), and `skills.skill_covers` lets a profile entry that names a job skill cover it
   ("CI/CD Pipelines" → CI/CD, "Stash/Bitbucket" → Git, "Microsoft SQL Server" → SQL) in matching, gaps, coverage and skill order.
-- **Job skills from existing experience (1.8.5, `services/inference.py`):** before writing, `expand_with_ai` handles every
-  job skill no employer's bullets name, in one pass. *Evidence:* `bullet_evidence` finds a more specific technology
+- **Job skills from existing experience (1.8.5, `services/inference.py`):** the resume-generation request handles every
+  job skill no employer's bullets name in the same response as tailoring. *Evidence:* `bullet_evidence` finds a more specific technology
   (`skills.IMPLIES`, transitive: Amazon EKS → Kubernetes, PostGIS → PostgreSQL, Next.js → React), an unambiguous description
   (`skills.DESCRIBES`: "Lambda" beside S3/DynamoDB/…, "serverless functions on AWS", kubectl, build/deployment pipelines, pull
   requests) or the strict AI semantic match from matching citing that exact bullet; informal spellings take the job's wording
   (`skills.SPELLINGS`: Postgres → PostgreSQL). Related tools (`skills.RELATED`: Docker/ECS for Kubernetes, MySQL for PostgreSQL)
   are never proof. *Ranking:* each employer scores the sum of its supporting bullets (implied/described 1.0, semantic 0.8); the
   highest wins, the more recent on a tie; a skill the operator confirmed for some employers is only placed at one of those, and
-  "Have not used" skills are excluded. *AI (optional, one batched call, `SKILL_EXPANSION` / `AISkillExpansion`):* per skill the
-  employer id, evidence ids, a rewritten bullet and a classification (equivalent / confirmed / related / none). Python decides:
+  "Have not used" skills are excluded. *AI (optional, merged into `RESUME_GENERATION` / `AIResumeTailoring`):* per skill the
+  employer id, evidence ids, a rewritten bullet and a classification (equivalent / confirmed / related / none). The cover-letter
+  request runs concurrently and does not wait for these resume-specific decisions. Python decides:
   the ranking keeps its employer and bullet; the AI bullet is used only if `check_proposed_bullet` passes (names the skill, no
   numbers or technologies beyond the source and the skill, ≥ 50% of the source's wording kept, not much longer, no job-description
   copy, no app wording), else `name_skill` words it ("Amazon EKS (Kubernetes)", "Lambda" → "AWS Lambda"); an AI-only

@@ -7,6 +7,7 @@ from resumeflow.domain.requirements import JobRequirements
 from resumeflow.domain.skills import normalize_skill
 from resumeflow.services.jobs import heuristic_requirements, normalize_url
 from resumeflow.services.matching import classify_candidate_authorization, classify_job_authorization
+from resumeflow.services.settings import AppSettings
 from tests.conftest import make_ready, upload
 
 
@@ -88,6 +89,10 @@ def test_job_authorization_classes():
     assert classify_job_authorization("Visa sponsorship available") is None
 
 
+def test_semantic_matching_is_off_by_default():
+    assert AppSettings().semantic_matching is False
+
+
 def test_ranking_end_to_end(client, ten_candidates):
     job = client.post("/jobs", json=_job_payload()).json()
     assert job["status"] == "MATCHED"
@@ -155,6 +160,7 @@ def test_ai_analysis_and_cache(client, secret_store, fake_ai):
 
 def test_semantic_match_requires_real_evidence(client, secret_store, fake_ai, ten_candidates):
     secret_store.set("openai_api_key", "sk-test-key-123456")
+    client.patch("/settings", json={"semantic_matching": True})
     requirements = JobRequirements(
         title="Data Platform Engineer", employer="Acme", seniority="unknown", min_years_experience=None,
         mandatory_skills=["Python", "Stream processing", "Quantum annealing"], preferred_skills=[], duties=[],
@@ -215,6 +221,7 @@ def test_semantic_match_is_skipped_for_one_candidate(client, secret_store, fake_
     candidate = upload(client, 0).json()["candidate"]
     make_ready(client, candidate["id"])
     secret_store.set("openai_api_key", "sk-test-key-123456")
+    client.patch("/settings", json={"semantic_matching": True})
     requirements = JobRequirements(
         title="Data Platform Engineer", employer="Acme", seniority="unknown", min_years_experience=None,
         mandatory_skills=["Stream processing"], preferred_skills=[], duties=[],

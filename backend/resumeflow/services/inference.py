@@ -2,7 +2,7 @@
 
 Missing JD skill → search every employment record → rank the employers by evidence → a bullet of the best-supported
 employer names the skill → validated in Python → inserted deterministically → exported. All missing skills are
-handled in one pass and, with AI, in one batched call.
+handled in one pass and, with AI, returned as part of the resume-writing call rather than a separate request.
 
 What counts as evidence that an employer's work shows a skill the resume never names (classification ``equivalent``,
 or ``confirmed`` when the operator also confirmed the skill for that employer):
@@ -11,7 +11,7 @@ or ``confirmed`` when the operator also confirmed the skill for that employer):
 - semantic: the strict AI semantic check during matching cited that exact bullet as showing the skill.
 A bullet that already names the skill or an alias ("Postgres") counts as named; the job's spelling is used.
 ``related``: similar but different work ("Docker on Amazon ECS" for Kubernetes). It is emphasised, never claimed.
-The AI expansion step writes the bullet for a placement (checked in Python, else the standard wording is used) and
+The resume AI response writes the bullet for a placement (checked in Python, else the standard wording is used) and
 can point out related work; its judgement alone never puts a skill in the candidate's experience.
 
 A placed skill becomes a skill of that employer in the application's snapshot (its evidence record), and the strongest
@@ -28,8 +28,7 @@ import hashlib
 import re
 from typing import Any
 
-from resumeflow.domain.content import AISkillExpansion, AISkillPlacement, ResumeBullet, ResumeContent
-from resumeflow.domain.enums import GenerationOperation
+from resumeflow.domain.content import AISkillPlacement, ResumeBullet, ResumeContent
 from resumeflow.domain.requirements import JobRequirements
 from resumeflow.domain.skills import (
     ALIASES,
@@ -44,8 +43,7 @@ from resumeflow.domain.skills import (
     skill_covers,
     term_span,
 )
-from resumeflow.services.ai.provider import AIError
-from resumeflow.services.ai.service import UNTRUSTED_NOTICE, AIService, wrap
+from resumeflow.services.ai.service import UNTRUSTED_NOTICE, wrap
 from resumeflow.services.evidence import numbers_in
 
 STRENGTH = {"implied": 1.0, "described": 1.0, "semantic": 0.8}
@@ -251,38 +249,20 @@ def expansion_candidates(snap: dict[str, Any], req: JobRequirements, exclude: se
     return [name for key, name in job_skills(req).items() if key not in exclude and not named_at(snap, key)]
 
 
-def ai_skill_expansion(
-    ai: AIService, snap: dict[str, Any], req: JobRequirements, skills: list[str], hints: list[str], application_id: str
-) -> list[AISkillPlacement]:
-    """One batched AI call for every missing skill. Raises AIError (callers continue without it)."""
-    listing = []
-    for role in snap.get("employment", []):
-        listing.append(f"[R-{role['id']}] {role['title']} at {role['employer']} ({role.get('start') or '?'} – {role.get('end') or '?'})")
-        listing += [f"  [B-{b['id']}] {b['text']}" for b in role["bullets"]]
+def expansion_prompt_sections(snap: dict[str, Any], skills: list[str], hints: list[str]) -> list[str]:
+    """Extra sections for the resume request so skill placement needs no separate AI call."""
     roles = {r["id"]: r for r in snap.get("employment", [])}
     confirmed = [
         f"{s['name']}: " + ", ".join(f"R-{r} ({roles[r]['employer']})" for r in s.get("roles") or [] if r in roles)
         for s in snap.get("skills", [])
         if s.get("roles") and not s.get("inferred")
     ]
-    result = ai.run(
-        operation=GenerationOperation.SKILL_EXPANSION,
-        role="analysis",
-        instructions=EXPANSION_INSTRUCTIONS,
-        input_text="\n\n".join(
-            [
-                wrap("missing_job_skills", "\n".join(skills)),
-                wrap("candidate_evidence", "\n".join(listing)),
-                wrap("candidate_skills", ", ".join(s["name"] for s in snap.get("skills", []) if not s.get("inferred")) or "none"),
-                wrap("operator_confirmed", "\n".join(confirmed) or "none"),
-                wrap("evidence_hints", "\n".join(hints) or "none"),
-            ]
-        ),
-        schema=AISkillExpansion,
-        application_id=application_id,
-        max_output_tokens=6000,
-    )
-    return result.placements
+    return [
+        wrap("missing_job_skills", "\n".join(skills) or "none"),
+        wrap("candidate_skills", ", ".join(s["name"] for s in snap.get("skills", []) if not s.get("inferred")) or "none"),
+        wrap("operator_confirmed", "\n".join(confirmed) or "none"),
+        wrap("evidence_hints", "\n".join(hints) or "none"),
+    ]
 
 
 def expansion_hints(snap: dict[str, Any], req: JobRequirements, semantic: dict[str, str] | None = None, exclude: set[str] | frozenset[str] = frozenset()) -> list[str]:

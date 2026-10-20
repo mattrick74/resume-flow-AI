@@ -33,7 +33,15 @@ from resumeflow.domain.skills import detect_tools, display_name, find_skill_in_t
 from resumeflow.services.ai.provider import AIConfigError, AIError, BudgetExceeded
 from resumeflow.services.ai.service import UNTRUSTED_NOTICE, AIService, wrap
 from resumeflow.services.evidence import bullet_index, evidence_listing, years_phrase
-from resumeflow.services.inference import emphasised_bullets, ensure_placements
+from resumeflow.services.inference import (
+    EXPANSION_INSTRUCTIONS,
+    emphasised_bullets,
+    ensure_placements,
+    expand_snapshot,
+    expansion_candidates,
+    expansion_hints,
+    expansion_prompt_sections,
+)
 
 MAX_SKILLS = 24
 _STOP = set("the and for with from that this into your our you are will have has using use team work".split())
@@ -455,18 +463,20 @@ def ai_resume(
     section: Section,
     instructions: str = "",
     density: str = "standard",
-) -> tuple[ResumeContent, list[str]]:
-    baseline = deterministic_resume(snap, req, density)
-    verified_skills = [s["name"] for s in snap.get("skills", [])]
+    semantic: dict[str, str] | None = None,
+    exclude: set[str] | frozenset[str] = frozenset(),
+) -> tuple[ResumeContent, list[str], dict[str, Any], list[str]]:
+    missing_skills = expansion_candidates(snap, req, exclude)
+    hints = expansion_hints(snap, req, semantic, exclude)
     result = ai.run(
         operation=GenerationOperation.RESUME_GENERATION,
         role="writing",
-        instructions=operator_notes(resume_instructions(density), instructions),
+        instructions=operator_notes(resume_instructions(density) + "\n\n" + EXPANSION_INSTRUCTIONS, instructions),
         input_text="\n\n".join(
             [
                 _job_brief(req, company, raw_jd),
                 wrap("candidate_evidence", evidence_listing(snap)),
-                wrap("verified_skills", "\n".join(verified_skills)),
+                wrap("verified_skills", "\n".join(s["name"] for s in snap.get("skills", []))),
                 wrap(
                     "skills_shown_by_experience",
                     "\n".join(
@@ -486,14 +496,18 @@ def ai_resume(
                     )
                     or "none",
                 ),
+                *expansion_prompt_sections(snap, missing_skills, hints),
             ]
         ),
         schema=AIResumeTailoring,
         application_id=application_id,
-        max_output_tokens=16_000,
+        max_output_tokens=20_000,
     )
+    expanded, expansion_notes = expand_snapshot(snap, req, semantic, exclude, result.placements, raw_jd)
+    baseline = deterministic_resume(expanded, req, density)
+    verified_skills = [s["name"] for s in expanded.get("skills", [])]
     notes: list[str] = []
-    bullets = bullet_index(snap)
+    bullets = bullet_index(expanded)
     verified = {normalize_skill(s): s for s in verified_skills}
 
     skills = []
@@ -505,7 +519,7 @@ def ai_resume(
     if dropped_skills:
         notes.append(f"Removed {dropped_skills} skill(s) the model suggested that aren't verified.")
     # Job skills found in the candidate's experience are listed even if the model left them out.
-    shown = [verified[p["normalized"]] for p in snap.get("inferred_skills") or [] if p["normalized"] in verified and verified[p["normalized"]] not in skills]
+    shown = [verified[p["normalized"]] for p in expanded.get("inferred_skills") or [] if p["normalized"] in verified and verified[p["normalized"]] not in skills]
     skills = list(dict.fromkeys([*shown, *skills] if skills else skills))[:MAX_SKILLS] or baseline.skills
 
     by_role = {r.role_id.removeprefix("R-"): r for r in result.roles}
@@ -545,11 +559,11 @@ def ai_resume(
         }
     )
     # A skill the employer's experience shows is in that employer's bullets even when the writing left it out.
-    tailored, placed = ensure_placements(tailored, snap)
+    tailored, placed = ensure_placements(tailored, expanded)
     notes += placed
     if previous is not None and section != "all":
         tailored = merge_section(previous, tailored, section)
-    return tailored, notes
+    return tailored, notes, expanded, expansion_notes
 
 
 def merge_section(previous: ResumeContent, fresh: ResumeContent, section: Section) -> ResumeContent:
@@ -711,21 +725,27 @@ def generate_documents(
     previous_cover: CoverLetterContent | None,
     instructions: str = "",
     density: str = "standard",
-) -> tuple[ResumeContent | None, CoverLetterContent | None, list[str], str]:
-    """Returns (resume, cover letter, notes, mode). Transient AI errors propagate for queue retry.
+    semantic: dict[str, str] | None = None,
+    exclude: set[str] | frozenset[str] = frozenset(),
+) -> tuple[ResumeContent | None, CoverLetterContent | None, list[str], str, dict[str, Any], list[str]]:
+    """Returns documents, notes, mode, expanded snapshot and expansion notes. Transient AI errors propagate.
 
-    With AI, the resume and the cover letter are written at the same time: they are independent calls,
-    so generating both takes about as long as the slower one.
+    The resume call also returns skill-placement decisions. The independent cover-letter call starts at the same
+    time, so it never waits for resume-specific skill placement.
     """
     notes: list[str] = []
     use_ai = ai is not None and ai.available()
     mode = "ai" if use_ai else "deterministic"
     resume: ResumeContent | None = None
     cover: CoverLetterContent | None = None
+    expanded_snap = snap
+    expansion_notes: list[str] = []
 
     calls: dict[str, Callable[[], Any]] = {}
     if use_ai and document in ("both", "resume"):
-        calls["resume"] = lambda: ai_resume(ai, snap, req, company, raw_jd, application_id, previous_resume, section, instructions, density)  # type: ignore[arg-type]
+        calls["resume"] = lambda: ai_resume(  # type: ignore[arg-type]
+            ai, snap, req, company, raw_jd, application_id, previous_resume, section, instructions, density, semantic, exclude
+        )
     if use_ai and document in ("both", "cover_letter"):
         calls["cover"] = lambda: ai_cover_letter(ai, snap, req, company, job_title, raw_jd, application_id, instructions)  # type: ignore[arg-type]
     outcomes = run_concurrently(calls)
@@ -738,14 +758,15 @@ def generate_documents(
     if document in ("both", "resume"):
         value, error = outcomes.get("resume", (None, None))
         if value is not None:
-            resume, resume_notes = value
+            resume, resume_notes, expanded_snap, expansion_notes = value
             notes += resume_notes
         elif error is not None:
             reason = "unavailable" if isinstance(error, (AIConfigError, BudgetExceeded)) else "failed"
             notes.append(f"AI writing {reason} ({error}); used deterministic tailoring.")
             mode = "deterministic"
         if resume is None:
-            fresh = deterministic_resume(snap, req, density)
+            expanded_snap, expansion_notes = expand_snapshot(snap, req, semantic, exclude, job_text=raw_jd)
+            fresh = deterministic_resume(expanded_snap, req, density)
             resume = merge_section(previous_resume, fresh, section) if previous_resume and section != "all" else fresh
 
     if document in ("both", "cover_letter"):
@@ -759,7 +780,7 @@ def generate_documents(
                 notes.append(f"AI cover letter failed ({error}); used a deterministic cover letter.")
         if cover is None:
             cover = deterministic_cover_letter(snap, req, company, job_title)
-    return resume, cover, notes, mode
+    return resume, cover, notes, mode, expanded_snap, expansion_notes
 
 
 def run_concurrently(calls: dict[str, Callable[[], Any]]) -> dict[str, tuple[Any, BaseException | None]]:

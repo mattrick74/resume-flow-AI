@@ -42,7 +42,7 @@ def test_written_documents_are_exported_straight_away(client, setup, secret_stor
     drain(client)
     done = client.get(f"/applications/{app['id']}").json()
     assert done["status"] == "EXPORTED" and done["approved_by"] == "automatic" and not done["error"]
-    writing = sorted(c["schema"] for c in fake_ai.calls if c["schema"] != "AISkillExpansion")
+    writing = sorted(c["schema"] for c in fake_ai.calls)
     assert writing == ["AICoverLetter", "AIResumeTailoring"]  # the two writing calls only: no fact-check
     body = " ".join(p["text"] for p in done["cover_letter"]["content"]["paragraphs"])
     assert body == " ".join(letter)  # the cover letter exactly as the API returned it
