@@ -14,7 +14,7 @@ from resumeflow.errors import AppError, safe_validation_details
 
 ThemePreference = Literal["system", "light", "dark"]
 PdfConverter = Literal["auto", "libreoffice", "word", "none"]
-# review: wait for Approve. auto: export right after generating unless the checks found an error. always: export regardless.
+# Legacy compatibility for existing settings rows and older clients. Generated documents now always export automatically.
 ExportMode = Literal["review", "auto", "always"]
 # pdf: the Word file is only an intermediate step (kept if no PDF can be made). pdf_docx: keep both.
 OutputFormats = Literal["pdf", "pdf_docx"]
@@ -77,7 +77,7 @@ class AppSettings(BaseModel):
     match_weights: MatchWeights = Field(default_factory=MatchWeights)
     resume_template: str = Field(default=DEFAULT_TEMPLATE, max_length=60, description="A built-in template name or custom:<id>")
     pdf_converter: PdfConverter = "auto"
-    export_mode: ExportMode = "auto"
+    export_mode: ExportMode = "auto"  # accepted for compatibility; the document pipeline no longer pauses for review
     output_formats: OutputFormats = "pdf"
     # A job posting URL already in history (saved or generated before) is skipped instead of saved or generated again.
     skip_known_urls: bool = True

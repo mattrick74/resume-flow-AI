@@ -103,9 +103,16 @@ def generate(application_id: str, body: GenerateRequest, request: Request, db: D
 
 
 @router.put("/{application_id}/documents/{document_type}")
-def edit_document(application_id: str, document_type: Literal["resume", "cover_letter"], body: DocumentEdit, db: DbSession) -> dict[str, Any]:
+def edit_document(
+    application_id: str,
+    document_type: Literal["resume", "cover_letter"],
+    body: DocumentEdit,
+    request: Request,
+    db: DbSession,
+) -> dict[str, Any]:
     app = service.get_application(db, application_id)
     service.edit_document(db, app, DocumentType(document_type), body.content)
+    service.auto_export(db, _queue(request), app)
     return service.application_detail(db, app)
 
 

@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import json
 import logging
+import time
 from collections.abc import Callable
 from datetime import UTC, date, datetime
 from pathlib import Path
@@ -34,6 +35,7 @@ from resumeflow.domain.enums import (
     DocumentType,
     PipelineStatus,
     ProcessingJobType,
+    ProcessingStatus,
     SelectionMethod,
 )
 from resumeflow.domain.status import Actor, InvalidTransition, check_application_transition
@@ -219,6 +221,7 @@ def enqueue_generation(db: Session, queue: ProcessingQueue, app: Application, *,
         ProcessingJobType.GENERATE_DOCUMENTS,
         idempotency_key=f"generate:{app.id}:{uuid4().hex[:12]}",
         application_id=app.id,
+        job_id=app.job_id,
         payload={"document": document, "section": section},
     )
 
@@ -302,6 +305,12 @@ def handle_generate(ai: AIService) -> Callable[[JobContext], None]:
             density=density,
             semantic=semantic,
             exclude=not_used,
+            on_stage_complete=lambda stage, duration_ms, details: ctx.complete_stage(
+                stage,
+                message="Resume writing completed" if stage == "resume_writing" else "Cover-letter writing completed",
+                duration_ms=duration_ms,
+                details={**details, "section": section},
+            ),
         )
         ctx.check_cancelled()
         ctx.progress(80)
@@ -312,7 +321,7 @@ def handle_generate(ai: AIService) -> Callable[[JobContext], None]:
                 db.commit()
 
         # No checking step: the documents written from the API response are saved as they are and exported straight
-        # away (Settings → export automatically). The generation notes are kept with the version for reference.
+        # away. The generation notes are kept with the version for reference.
         results = []
         if resume is not None and document in ("both", "resume"):
             results.append((DocumentType.RESUME, resume))
@@ -365,7 +374,7 @@ def generation_failed(ctx: JobContext, exc: Exception) -> None:
         db.commit()
 
 
-# ---------------------------------------------------------------- review
+# ---------------------------------------------------------------- automatic finalization and editing
 
 
 def edit_document(db: Session, app: Application, doc_type: DocumentType, content: dict[str, Any]) -> Document:
@@ -406,19 +415,53 @@ def approve(db: Session, app: Application, acknowledge_warnings: bool, *, actor:
 
 
 def auto_export(db: Session, queue: ProcessingQueue, app: Application) -> str:
-    """After generation: export straight away when Settings allow it. Returns what happened."""
-    mode = load_settings(db).export_mode
-    if mode == "review" or app.status != PipelineStatus.AWAITING_REVIEW:
-        return "review"
+    """Automatically approve and export every complete generated application."""
+    if app.status != PipelineStatus.AWAITING_REVIEW:
+        return "not_ready"
     try:
-        errors = _blocking_errors(db, app)
+        _blocking_errors(db, app)
     except AppError:
-        return "review"  # only one document so far (e.g. the other is still being written)
-    if errors and mode == "auto":
-        return "held"  # the checks found something that needs a person; it waits in the Review Queue
+        return "incomplete"  # only one document so far (for example, during a partial regeneration)
     approve(db, app, acknowledge_warnings=True, actor=Actor.AUTOMATION)
     request_export(db, queue, app)
     return "exported"
+
+
+def resume_automatic_exports(db: Session, queue: ProcessingQueue) -> int:
+    """Continue applications left in the former manual-review states.
+
+    Export jobs are idempotent by document version, so restarting the app cannot
+    queue duplicate output for the same resume and cover-letter versions.
+    """
+    resumed = 0
+    pending = list(
+        db.scalars(
+            select(Application)
+            .where(Application.status.in_((PipelineStatus.AWAITING_REVIEW, PipelineStatus.APPROVED)))
+            .order_by(Application.created_at)
+        )
+    )
+    for app in pending:
+        try:
+            active_generation = db.scalar(
+                select(ProcessingJob.id).where(
+                    ProcessingJob.application_id == app.id,
+                    ProcessingJob.job_type == ProcessingJobType.GENERATE_DOCUMENTS,
+                    ProcessingJob.status.in_((ProcessingStatus.QUEUED, ProcessingStatus.RUNNING)),
+                )
+            )
+            if active_generation is not None:
+                continue
+            if app.status == PipelineStatus.AWAITING_REVIEW:
+                resumed += auto_export(db, queue, app) == "exported"
+            else:
+                export_job = request_export(db, queue, app)
+                if export_job.status in (ProcessingStatus.FAILED, ProcessingStatus.CANCELLED):
+                    queue.retry(db, export_job.id)
+                resumed += 1
+        except AppError as exc:
+            logger.warning("Could not resume automatic export for application %s: %s", app.id, exc)
+    return resumed
 
 
 # ---------------------------------------------------------------- confirmed experience (v1.8)
@@ -444,7 +487,7 @@ def store_coverage(db: Session, app: Application) -> None:
     """Keeps the headline coverage numbers on the application (metadata, analytics). Never blocks generation."""
     try:
         report = coverage_report(db, app)
-    except Exception:  # a report is informational; generation and review must not fail because of it
+    except Exception:  # a report is informational; generation and export must not fail because of it
         logger.exception("Coverage report failed for application %s", app.id)
         return
     app.coverage_json = {
@@ -532,13 +575,20 @@ def request_export(db: Session, queue: ProcessingQueue, app: Application) -> Pro
         ProcessingJobType.EXPORT_APPLICATION,
         idempotency_key=f"export:{app.id}:r{resume.version}:c{cover.version}",
         application_id=app.id,
+        job_id=app.job_id,
     )
 
 
 def request_pdf_retry(db: Session, queue: ProcessingQueue, app: Application) -> ProcessingJob:
     if app.exported_at is None:
         raise AppError(409, "not_exported", "Export the application first.")
-    return queue.enqueue(db, ProcessingJobType.CONVERT_PDF, idempotency_key=f"pdf:{app.id}:{uuid4().hex[:12]}", application_id=app.id)
+    return queue.enqueue(
+        db,
+        ProcessingJobType.CONVERT_PDF,
+        idempotency_key=f"pdf:{app.id}:{uuid4().hex[:12]}",
+        application_id=app.id,
+        job_id=app.job_id,
+    )
 
 
 _URL_PART_MAX = 60
@@ -742,21 +792,59 @@ def _existing_file(ctx: JobContext, app_id: str, doc_type: DocumentType, fmt: Do
 
 def _convert_pdfs(ctx: JobContext, app_id: str, folder: Path, prefix: str, documents: list[tuple[DocumentType, int, bytes]]) -> tuple[str, str | None]:
     """Converts the rendered DOCX documents (bytes) that don't have a PDF yet, all in one converter call."""
+    started = time.perf_counter()
     with ctx.session() as db:
         settings = load_settings(db)
     if settings.pdf_converter == "none":
+        ctx.complete_stage(
+            "pdf_conversion",
+            message="PDF conversion skipped",
+            started_at=started,
+            status="skipped",
+            details={"pdf_status": "skipped", "reason": "disabled", "document_count": len(documents)},
+        )
         return "skipped", None
-    if resolve_converter(settings) is None:
-        return "failed", "No PDF converter available (install LibreOffice or Microsoft Word)."
+    converter = resolve_converter(settings)
+    if converter is None:
+        error = "No PDF converter available (install LibreOffice or Microsoft Word)."
+        ctx.complete_stage(
+            "pdf_conversion",
+            message="PDF conversion failed",
+            started_at=started,
+            status="failed",
+            details={"pdf_status": "failed", "error": error, "document_count": len(documents)},
+        )
+        return "failed", error
     todo = [(t, v, data) for t, v, data in documents if not _existing_file(ctx, app_id, t, DocumentFormat.PDF, v)]
     if not todo:
+        ctx.complete_stage(
+            "pdf_conversion",
+            message="PDF files already available",
+            started_at=started,
+            status="skipped",
+            details={"pdf_status": "succeeded", "reason": "already_exists", "converter": converter, "document_count": 0},
+        )
         return "succeeded", None
     try:
         pdfs = convert_documents_to_pdf([data for _, _, data in todo], settings)
     except PdfConversionError as exc:
-        return "failed", str(exc)[:2000]
+        error = str(exc)[:2000]
+        ctx.complete_stage(
+            "pdf_conversion",
+            message="PDF conversion failed",
+            started_at=started,
+            status="failed",
+            details={"pdf_status": "failed", "error": error, "converter": converter, "document_count": len(todo)},
+        )
+        return "failed", error
     for (doc_type, version, _), pdf in zip(todo, pdfs):
         _ensure_file(ctx, app_id, doc_type, DocumentFormat.PDF, version, folder, prefix, lambda p=pdf: p)
+    ctx.complete_stage(
+        "pdf_conversion",
+        message="PDF conversion completed",
+        started_at=started,
+        details={"pdf_status": "succeeded", "converter": converter, "document_count": len(todo)},
+    )
     return "succeeded", None
 
 
@@ -765,7 +853,20 @@ def _save_word_files(ctx: JobContext, app_id: str, folder: Path, prefix: str, do
         _ensure_file(ctx, app_id, doc_type, DocumentFormat.DOCX, version, folder, prefix, lambda d=data: d)
 
 
+def _render_document(ctx: JobContext, doc_type: DocumentType, version: int, content: Any, template: Any) -> bytes:
+    started = time.perf_counter()
+    data = render_resume(content, template) if doc_type == DocumentType.RESUME else render_cover_letter(content, template)
+    ctx.complete_stage(
+        "resume_render" if doc_type == DocumentType.RESUME else "cover_letter_render",
+        message="Resume rendering completed" if doc_type == DocumentType.RESUME else "Cover-letter rendering completed",
+        started_at=started,
+        details={"document_type": doc_type.value, "version": version},
+    )
+    return data
+
+
 def handle_export(ctx: JobContext) -> None:
+    export_started = time.perf_counter()
     with ctx.session() as db:
         app = get_application(db, ctx.application_id)  # type: ignore[arg-type]
         job = db.get(Job, app.job_id)
@@ -784,8 +885,12 @@ def handle_export(ctx: JobContext) -> None:
 
     # The Word documents are rendered in memory (milliseconds); they are only saved when asked for, or as a fallback.
     documents = [
-        (DocumentType.RESUME, versions[0], render_resume(resume, template)),
-        (DocumentType.COVER_LETTER, versions[1], render_cover_letter(cover, template)),
+        (DocumentType.RESUME, versions[0], _render_document(ctx, DocumentType.RESUME, versions[0], resume, template)),
+        (
+            DocumentType.COVER_LETTER,
+            versions[1],
+            _render_document(ctx, DocumentType.COVER_LETTER, versions[1], cover, template),
+        ),
     ]
     if keep_word:
         _save_word_files(ctx, app_id, folder, prefix, documents)
@@ -814,6 +919,16 @@ def handle_export(ctx: JobContext) -> None:
         app = get_application(db, app_id)
         _transition(app, PipelineStatus.EXPORTED, Actor.SYSTEM)
         db.commit()
+    ctx.complete_stage(
+        "document_export",
+        message="Document export completed",
+        started_at=export_started,
+        details={
+            "output_directory": str(folder),
+            "pdf_status": pdf_status,
+            "output_formats": "pdf_docx" if keep_word else "pdf",
+        },
+    )
 
 
 def handle_convert_pdf(ctx: JobContext) -> None:
@@ -832,7 +947,7 @@ def handle_convert_pdf(ctx: JobContext) -> None:
             elif approved is not None and approved.status == DocumentStatus.APPROVED:
                 # PDF-only exports keep no Word file: render the approved version again.
                 content = CONTENT_MODELS[doc_type].model_validate(approved.content_json)
-                data = render_resume(content, template) if doc_type == DocumentType.RESUME else render_cover_letter(content, template)
+                data = _render_document(ctx, doc_type, approved.version, content, template)
                 documents.append((doc_type, approved.version, data))
         app_id = app.id
     if not documents:

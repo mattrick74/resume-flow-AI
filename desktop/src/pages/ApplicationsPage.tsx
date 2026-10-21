@@ -21,15 +21,13 @@ import { formatDate } from "@/lib/utils";
 
 const STATUSES: { value: string; label: string }[] = [
   { value: "", label: "Any status" },
-  { value: "AWAITING_REVIEW", label: "Awaiting review" },
-  { value: "APPROVED", label: "Approved" },
   { value: "EXPORTED", label: "Exported" },
   { value: "SUBMITTED", label: "Submitted" },
   { value: "INTERVIEW", label: "Interview" },
   { value: "OFFER", label: "Offer" },
   { value: "REJECTED", label: "Rejected" },
   { value: "FAILED", label: "Failed" },
-  { value: "GENERATING,VALIDATING,MATCHED", label: "In progress" },
+  { value: "GENERATING,VALIDATING,MATCHED,AWAITING_REVIEW,APPROVED", label: "In progress" },
 ];
 
 export function ApplicationsPage() {

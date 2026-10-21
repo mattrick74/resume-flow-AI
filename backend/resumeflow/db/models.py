@@ -279,7 +279,7 @@ class Application(TimestampMixin, Base):
     error: Mapped[str | None] = mapped_column(Text)
     pdf_status: Mapped[str | None] = mapped_column(String(20))  # succeeded | failed | skipped
     approved_at: Mapped[datetime | None] = mapped_column(UTCDateTime)
-    # "operator" (clicked Approve) or "automatic" (the export-automatically setting); recorded in the metadata.
+    # "operator" for legacy/manual API calls or "automatic" for the current pipeline; recorded in the metadata.
     approved_by: Mapped[str | None] = mapped_column(String(20))
     # The operator's own notes for the AI writer for this application (on top of the default in Settings).
     instructions: Mapped[str | None] = mapped_column(Text)
@@ -365,6 +365,36 @@ class ProcessingJob(TimestampMixin, Base):
     started_at: Mapped[datetime | None] = mapped_column(UTCDateTime)
     finished_at: Mapped[datetime | None] = mapped_column(UTCDateTime)
     error: Mapped[str | None] = mapped_column(Text)
+
+
+class ProcessingStageEvent(Base):
+    """One durable, cursor-addressable completion event for a slow processing stage.
+
+    Events are separate rows rather than a JSON list on ``processing_jobs`` because
+    resume and cover-letter writing may finish concurrently.  The integer primary
+    key gives the UI a stable ordering and polling cursor.
+    """
+
+    __tablename__ = "processing_stage_events"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    processing_job_id: Mapped[str | None] = mapped_column(
+        ForeignKey("processing_jobs.id", ondelete="CASCADE"), index=True
+    )
+    application_id: Mapped[str | None] = mapped_column(
+        ForeignKey("applications.id", ondelete="CASCADE"), index=True
+    )
+    job_id: Mapped[str | None] = mapped_column(
+        ForeignKey("jobs.id", ondelete="CASCADE"), index=True
+    )
+    stage: Mapped[str] = mapped_column(String(40), nullable=False)
+    status: Mapped[str] = mapped_column(String(20), nullable=False)
+    message: Mapped[str] = mapped_column(String(300), nullable=False)
+    duration_ms: Mapped[int] = mapped_column(Integer, nullable=False)
+    details_json: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        UTCDateTime, default=utcnow, nullable=False, index=True
+    )
 
 
 class ResumeTemplate(TimestampMixin, Base):

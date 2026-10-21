@@ -3,7 +3,6 @@ import {
   CircleAlert,
   CircleCheck,
   CircleDashed,
-  ClipboardCheck,
   Clock,
   FilePlus2,
   Inbox,
@@ -99,11 +98,11 @@ function DashboardContent({ data }: { data: DashboardSummary }) {
         </Alert>
       )}
       {data.processing_failed > 0 && (
-        <Alert variant="warning" title={`${data.processing_failed} background task${data.processing_failed === 1 ? "" : "s"} failed`} action={<Button asChild size="sm" variant="outline"><Link to="/review">Open review queue</Link></Button>}>
+        <Alert variant="warning" title={`${data.processing_failed} background task${data.processing_failed === 1 ? "" : "s"} failed`} action={<Button asChild size="sm" variant="outline"><Link to="/applications">Open applications</Link></Button>}>
           Failed generations and PDF conversions can be retried from the application.
         </Alert>
       )}
-      <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
+      <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
         <Card className="md:col-span-2">
           <CardHeader>
             <CardDescription>Today’s goal</CardDescription>
@@ -127,13 +126,6 @@ function DashboardContent({ data }: { data: DashboardSummary }) {
             </div>
           </CardContent>
         </Card>
-        <StatCard
-          icon={ClipboardCheck}
-          label="Awaiting review"
-          value={data.awaiting_review}
-          tone={data.awaiting_review > 0 ? "warning" : undefined}
-          footer={<Link to="/review" className="hover:text-foreground hover:underline">Open review queue</Link>}
-        />
         <StatCard
           icon={CircleAlert}
           label="Failed today"
@@ -200,7 +192,7 @@ function SavedJobsBanner({ count }: { count: number }) {
         <div className="text-sm font-medium">
           {count} saved job{count === 1 ? "" : "s"} waiting
         </div>
-        <div className="text-xs text-muted-foreground">One click analyzes each job, picks the top eligible candidate and writes a tailored resume and cover letter for your review.</div>
+        <div className="text-xs text-muted-foreground">One click analyzes each job, picks the top eligible candidate, writes tailored documents and saves the files automatically.</div>
       </div>
       <Button asChild variant="ghost" size="sm">
         <Link to="/jobs?filter=saved">View</Link>
@@ -212,7 +204,7 @@ function SavedJobsBanner({ count }: { count: number }) {
           processJobs.mutate(
             { all_saved: true },
             {
-              onSuccess: (result) => toast.success(`${result.queued.length} job${result.queued.length === 1 ? "" : "s"} queued`, { description: "Finished documents appear in the Review Queue." }),
+              onSuccess: (result) => toast.success(`${result.queued.length} job${result.queued.length === 1 ? "" : "s"} queued`, { description: "Finished files appear in Applications." }),
               onError: (error) => toast.error("Couldn't queue the jobs", { description: describeError(error) }),
             },
           )
@@ -303,9 +295,8 @@ function SetupChecklist({ data }: { data: DashboardSummary }) {
 function DashboardSkeleton() {
   return (
     <div className="space-y-4" aria-busy="true" aria-label="Loading dashboard">
-      <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
+      <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
         <Skeleton className="h-36 md:col-span-2" />
-        <Skeleton className="h-36" />
         <Skeleton className="h-36" />
       </div>
       <div className="grid gap-4 md:grid-cols-3">

@@ -17,6 +17,7 @@ export const queryKeys = {
   analytics: (days: number) => ["analytics", days] as const,
   backups: ["backups"] as const,
   pdfConverter: ["pdf-converter"] as const,
+  processingEvents: ["processing-jobs", "events"] as const,
   templates: ["templates"] as const,
 };
 

@@ -3,11 +3,12 @@
 Saved jobs (status DRAFT) wait until the operator queues them. Each queued job
 runs the whole pipeline in the background: analyze -> match -> create the
 application for the top eligible candidate -> generate the tailored documents,
-which then wait in the Review Queue for a person to approve.
+approve the generated versions internally -> render and save the output files.
 """
 
 from __future__ import annotations
 
+import time
 from collections.abc import Callable
 from typing import Any
 from uuid import uuid4
@@ -127,10 +128,24 @@ def handle_process_job(ai: AIService) -> Callable[[JobContext], None]:
             if open_application(db, job.id):
                 return  # someone already created it; nothing to do
             if job.parsed_requirements_json is None or job.status in (PipelineStatus.DRAFT, PipelineStatus.FAILED):
+                started = time.perf_counter()
                 analyze_job(db, ai, job)
+                ctx.complete_stage(
+                    "jd_analysis",
+                    message="Job description analysis completed",
+                    started_at=started,
+                    details={"source": job.requirements_source},
+                )
             ctx.progress(40)
             ctx.check_cancelled()
-            run_matching(db, ai, job)
+            started = time.perf_counter()
+            match_result = run_matching(db, ai, job)
+            ctx.complete_stage(
+                "candidate_matching",
+                message="Candidate matching completed",
+                started_at=started,
+                details=match_result,
+            )
             ctx.progress(70)
             if job.status != PipelineStatus.MATCHED:
                 return  # NO_ELIGIBLE_CANDIDATE is recorded on the job; nothing is fabricated

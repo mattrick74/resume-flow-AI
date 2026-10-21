@@ -5,6 +5,7 @@ import { HashRouter, Navigate, Route, Routes } from "react-router";
 import { ThemeProvider, ThemeSync } from "@/app/theme";
 import { AppShell } from "@/components/layout/AppShell";
 import { BackendGate } from "@/components/layout/BackendGate";
+import { ProcessingNotifications } from "@/components/layout/ProcessingNotifications";
 import { Toaster } from "@/components/ui/sonner";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { AnalyticsPage } from "@/pages/AnalyticsPage";
@@ -17,7 +18,6 @@ import { JobPage } from "@/pages/JobPage";
 import { JobsPage } from "@/pages/JobsPage";
 import { NewJobPage } from "@/pages/NewJobPage";
 import { NotFoundPage } from "@/pages/NotFoundPage";
-import { ReviewQueuePage } from "@/pages/ReviewQueuePage";
 import { SettingsPage } from "@/pages/SettingsPage";
 
 export function createQueryClient() {
@@ -38,7 +38,7 @@ export function AppRoutes() {
         <Route path="jobs/new" element={<NewJobPage />} />
         <Route path="jobs/:id" element={<JobPage />} />
         <Route path="matching" element={<Navigate to="/jobs" replace />} />
-        <Route path="review" element={<ReviewQueuePage />} />
+        <Route path="review" element={<Navigate to="/applications" replace />} />
         <Route path="candidates" element={<CandidatesPage />} />
         <Route path="candidates/:id" element={<CandidateDetailPage />} />
         <Route path="applications" element={<ApplicationsPage />} />
@@ -72,6 +72,7 @@ export function App() {
         <ThemeSync />
         {/* Hash routing: the packaged app is served from a custom protocol with no server-side routes. */}
         <HashRouter>
+          <ProcessingNotifications />
           <AppRoutes />
         </HashRouter>
       </BackendGate>

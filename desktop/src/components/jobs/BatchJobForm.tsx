@@ -139,7 +139,7 @@ export function BatchJobForm() {
       if (created) {
         toast.success(
           generate
-            ? `${created} job${created === 1 ? "" : "s"} saved and queued — tailored documents will appear in the Review Queue`
+            ? `${created} job${created === 1 ? "" : "s"} saved and queued — tailored documents and PDFs will be saved automatically`
             : `${created} job${created === 1 ? "" : "s"} saved for later`,
           { description },
         );

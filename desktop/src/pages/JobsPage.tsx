@@ -120,7 +120,7 @@ function describeQueued(result: QueueResult) {
   const skipped = result.skipped.length;
   const title = queued ? `${queued} job${queued === 1 ? "" : "s"} queued for tailored documents` : "Nothing new was queued";
   const reasons = [...new Set(result.skipped.map((s) => s.reason.toLowerCase()))].join(", ");
-  return { title, description: skipped ? `${skipped} skipped (${reasons}).` : "Finished documents appear in the Review Queue." };
+  return { title, description: skipped ? `${skipped} skipped (${reasons}).` : "Finished documents are saved automatically and appear in Applications." };
 }
 
 export function JobsPage() {
@@ -180,7 +180,7 @@ export function JobsPage() {
     <>
       <PageHeader
         title="Jobs"
-        description="Saved and analyzed jobs. Generate tailored resumes and cover letters for many at once; each result waits in the Review Queue for your approval."
+        description="Saved and analyzed jobs. Generate tailored resumes and cover letters for many at once; completed files are saved automatically."
         actions={
           <>
             <Button asChild variant="outline">

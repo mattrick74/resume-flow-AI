@@ -52,7 +52,7 @@ export interface AppSettings {
   /** A built-in template ("professional", "compact") or "custom:<id>" for one copied from a resume. */
   resume_template: string;
   pdf_converter: "auto" | "libreoffice" | "word" | "none";
-  /** review: wait for Approve. auto / always: export as soon as the documents are written. */
+  /** Legacy compatibility field. The current pipeline always exports as soon as both documents are written. */
   export_mode: "review" | "auto" | "always";
   /** pdf: save PDFs only (the Word file is kept only if no PDF can be made). pdf_docx: save both. */
   output_formats: "pdf" | "pdf_docx";
@@ -565,6 +565,35 @@ export interface ProcessingJobInfo {
   application_id?: string | null;
 }
 
+export type ProcessingStage =
+  | "jd_analysis"
+  | "candidate_matching"
+  | "resume_writing"
+  | "cover_letter_writing"
+  | "resume_render"
+  | "cover_letter_render"
+  | "pdf_conversion"
+  | "document_export"
+  | (string & {});
+
+export interface ProcessingStageEvent {
+  id: number;
+  processing_job_id: string | null;
+  job_id: string | null;
+  application_id: string | null;
+  stage: ProcessingStage;
+  status: "succeeded" | "failed" | "skipped";
+  message: string;
+  duration_ms: number;
+  details: Record<string, unknown>;
+  created_at: string;
+}
+
+export interface ProcessingStageEventsResponse {
+  events: ProcessingStageEvent[];
+  next_after_id: number;
+}
+
 export interface ApplicationSummary {
   id: string;
   job_id: string;
@@ -595,7 +624,7 @@ export interface OutputFile {
 }
 
 export interface ApplicationDetail extends ApplicationSummary {
-  /** "operator" (clicked Approve) or "automatic" (Settings: export automatically). */
+  /** "operator" for legacy/manual API calls or "automatic" for the current pipeline. */
   approved_by: "operator" | "automatic" | null;
   /** This application's notes for the AI writer. */
   instructions: string | null;

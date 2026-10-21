@@ -1,7 +1,6 @@
 import {
   Briefcase,
   ChartNoAxesColumn,
-  ClipboardCheck,
   FilePlus2,
   FolderOpen,
   LayoutDashboard,
@@ -20,14 +19,14 @@ export interface NavItem {
   description: string;
 }
 
-/** Order defines the Alt+1…Alt+8 shortcuts. */
+/** Order defines the Alt+1…Alt+7 shortcuts. */
 export const NAV_ITEMS: NavItem[] = [
   {
     path: "/",
     label: "Dashboard",
     icon: LayoutDashboard,
     group: "Workflow",
-    description: "Daily throughput, review backlog and spend",
+    description: "Daily throughput, automatic processing and spend",
   },
   {
     path: "/jobs/new",
@@ -42,13 +41,6 @@ export const NAV_ITEMS: NavItem[] = [
     icon: Briefcase,
     group: "Workflow",
     description: "Saved jobs, one-click generation and ranked candidates",
-  },
-  {
-    path: "/review",
-    label: "Review Queue",
-    icon: ClipboardCheck,
-    group: "Workflow",
-    description: "Check, edit and approve generated documents",
   },
   {
     path: "/candidates",

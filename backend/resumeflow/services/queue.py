@@ -12,6 +12,7 @@ from __future__ import annotations
 import logging
 import random
 import threading
+import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
@@ -20,7 +21,7 @@ from typing import Any
 from sqlalchemy import select, update
 from sqlalchemy.orm import Session, sessionmaker
 
-from resumeflow.db.models import ProcessingJob
+from resumeflow.db.models import Application, Candidate, Job, ProcessingJob, ProcessingStageEvent
 from resumeflow.domain.enums import ProcessingJobType, ProcessingStatus
 from resumeflow.errors import AppError
 
@@ -44,6 +45,47 @@ def backoff_seconds(retry_count: int) -> float:
     return min(300.0, 5.0 * (2 ** max(retry_count - 1, 0))) * random.uniform(0.8, 1.2)
 
 
+def record_stage_event(
+    db: Session,
+    *,
+    stage: str,
+    message: str,
+    duration_ms: int,
+    status: str = "succeeded",
+    processing_job_id: str | None = None,
+    application_id: str | None = None,
+    job_id: str | None = None,
+    details: dict[str, Any] | None = None,
+) -> None:
+    """Record a UI notification event without making the completed work depend on it."""
+    try:
+        event_details = dict(details or {})
+        app = db.get(Application, application_id) if application_id else None
+        if app is not None:
+            job_id = job_id or app.job_id
+            candidate = db.get(Candidate, app.candidate_id)
+            event_details.setdefault("candidate_name", candidate.full_name if candidate else None)
+        job = db.get(Job, job_id) if job_id else None
+        event_details.setdefault("job_title", job.title if job else None)
+        event_details.setdefault("company", job.company if job else None)
+        db.add(
+            ProcessingStageEvent(
+                processing_job_id=processing_job_id,
+                application_id=application_id,
+                job_id=job_id,
+                stage=stage[:40],
+                status=status[:20],
+                message=message[:300],
+                duration_ms=max(0, int(duration_ms)),
+                details_json=event_details,
+            )
+        )
+        db.commit()
+    except Exception:
+        db.rollback()
+        logger.exception("Could not record stage %s", stage)
+
+
 @dataclass
 class JobContext:
     queue: ProcessingQueue
@@ -60,6 +102,39 @@ class JobContext:
         with self.session() as db:
             db.execute(update(ProcessingJob).where(ProcessingJob.id == self.id).values(progress=max(0, min(100, percent))))
             db.commit()
+
+    def complete_stage(
+        self,
+        stage: str,
+        *,
+        message: str,
+        started_at: float | None = None,
+        duration_ms: int | None = None,
+        status: str = "succeeded",
+        details: dict[str, Any] | None = None,
+    ) -> None:
+        """Persist one completed stage without sharing a Session across worker threads.
+
+        Resume and cover-letter generation run concurrently, so every callback
+        opens its own short-lived session.  Recording a notification must never
+        turn otherwise successful document work into a failed processing job.
+        """
+        if duration_ms is None:
+            if started_at is None:
+                raise ValueError("started_at or duration_ms is required")
+            duration_ms = round((time.perf_counter() - started_at) * 1000)
+        with self.session() as db:
+            record_stage_event(
+                db,
+                processing_job_id=self.id,
+                application_id=self.application_id,
+                job_id=self.job_id,
+                stage=stage,
+                status=status,
+                message=message,
+                duration_ms=duration_ms,
+                details=details,
+            )
 
     def check_cancelled(self) -> None:
         with self.session() as db:

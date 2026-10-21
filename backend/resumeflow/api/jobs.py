@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+import logging
+import time
 from typing import Any
 
 from fastapi import APIRouter, Request, Response
 from pydantic import BaseModel, ConfigDict, Field
-from sqlalchemy import func, select
+from sqlalchemy import delete, func, select
 
 from resumeflow.api.deps import AI, DbSession
 from resumeflow.db.models import Application, Candidate, CandidateMatch, Job, ProcessingJob
@@ -14,8 +16,10 @@ from resumeflow.errors import AppError
 from resumeflow.services import batch, experience
 from resumeflow.services import jobs as service
 from resumeflow.services.matching import run_matching
+from resumeflow.services.queue import record_stage_event
 
 router = APIRouter(prefix="/jobs", tags=["jobs"])
+logger = logging.getLogger(__name__)
 
 
 class JobCreate(BaseModel):
@@ -78,8 +82,26 @@ class JobUpdate(BaseModel):
 
 
 def _analyze_and_match(db, ai, job: Job) -> None:
+    started = time.perf_counter()
     service.analyze_job(db, ai, job)
-    run_matching(db, ai, job)
+    record_stage_event(
+        db,
+        job_id=job.id,
+        stage="jd_analysis",
+        message="Job description analysis completed",
+        duration_ms=round((time.perf_counter() - started) * 1000),
+        details={"source": job.requirements_source},
+    )
+    started = time.perf_counter()
+    result = run_matching(db, ai, job)
+    record_stage_event(
+        db,
+        job_id=job.id,
+        stage="candidate_matching",
+        message="Candidate matching completed",
+        duration_ms=round((time.perf_counter() - started) * 1000),
+        details=result,
+    )
 
 
 @router.get("")
@@ -203,7 +225,16 @@ def rematch_job(job_id: str, db: DbSession, ai: AI) -> dict[str, Any]:
     job = service.get_job(db, job_id)
     if job.parsed_requirements_json is None:
         raise AppError(409, "not_analyzed", "Analyze this job first.")
-    run_matching(db, ai, job)
+    started = time.perf_counter()
+    result = run_matching(db, ai, job)
+    record_stage_event(
+        db,
+        job_id=job.id,
+        stage="candidate_matching",
+        message="Candidate matching completed",
+        duration_ms=round((time.perf_counter() - started) * 1000),
+        details=result,
+    )
     return service.job_detail(db, job)
 
 
@@ -235,16 +266,52 @@ def delete_job(job_id: str, db: DbSession) -> Response:
 @router.post("/{job_id}/analyze")
 def analyze_job(job_id: str, db: DbSession, ai: AI) -> dict[str, Any]:
     job = service.get_job(db, job_id)
-    job.parsed_requirements_json = None  # force a fresh extraction rather than the cache
-    _analyze_and_match(db, ai, job)
-    return service.job_detail(db, job)
+    job.parsed_requirements_json = None
+    started = time.perf_counter()
+
+    # This endpoint intentionally measures only a fresh JD extraction. Candidate
+    # matching is a separate step and must not be included in this duration.
+    service.analyze_job(db, ai, job, use_cache=False)
+    analysis_duration_ms = round((time.perf_counter() - started) * 1000)
+
+    # Any previous ranks were calculated from the old requirements and are now
+    # stale. Leave the job ready for an explicit /match request.
+    db.execute(delete(CandidateMatch).where(CandidateMatch.job_id == job.id))
+    job.status = PipelineStatus.DRAFT
+    db.commit()
+
+    record_stage_event(
+        db,
+        job_id=job.id,
+        stage="jd_analysis",
+        message="Job description analysis completed",
+        duration_ms=analysis_duration_ms,
+        details={"source": job.requirements_source},
+    )
+
+    logger.info(
+        "JD analysis finished for job %s in %d ms (source=%s); matching stopped",
+        job.id,
+        analysis_duration_ms,
+        job.requirements_source,
+    )
+    return {**service.job_detail(db, job), "analysis_duration_ms": analysis_duration_ms}
 
 
 @router.put("/{job_id}/requirements")
 def update_requirements(job_id: str, body: JobRequirements, db: DbSession, ai: AI) -> dict[str, Any]:
     job = service.get_job(db, job_id)
     service.update_requirements(db, job, body)
-    run_matching(db, ai, job)
+    started = time.perf_counter()
+    result = run_matching(db, ai, job)
+    record_stage_event(
+        db,
+        job_id=job.id,
+        stage="candidate_matching",
+        message="Candidate matching completed",
+        duration_ms=round((time.perf_counter() - started) * 1000),
+        details=result,
+    )
     return service.job_detail(db, job)
 
 
@@ -252,6 +319,24 @@ def update_requirements(job_id: str, body: JobRequirements, db: DbSession, ai: A
 def match_job(job_id: str, db: DbSession, ai: AI) -> dict[str, Any]:
     job = service.get_job(db, job_id)
     if job.parsed_requirements_json is None:
+        started = time.perf_counter()
         service.analyze_job(db, ai, job)
-    run_matching(db, ai, job)
+        record_stage_event(
+            db,
+            job_id=job.id,
+            stage="jd_analysis",
+            message="Job description analysis completed",
+            duration_ms=round((time.perf_counter() - started) * 1000),
+            details={"source": job.requirements_source},
+        )
+    started = time.perf_counter()
+    result = run_matching(db, ai, job)
+    record_stage_event(
+        db,
+        job_id=job.id,
+        stage="candidate_matching",
+        message="Candidate matching completed",
+        duration_ms=round((time.perf_counter() - started) * 1000),
+        details=result,
+    )
     return service.job_detail(db, job)

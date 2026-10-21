@@ -735,6 +735,7 @@ def generate_documents(
     density: str = "standard",
     semantic: dict[str, str] | None = None,
     exclude: set[str] | frozenset[str] = frozenset(),
+    on_stage_complete: Callable[[str, int, dict[str, Any]], None] | None = None,
 ) -> tuple[ResumeContent | None, CoverLetterContent | None, list[str], str, dict[str, Any], list[str]]:
     """Returns documents, notes, mode, expanded snapshot and expansion notes. Transient AI errors propagate.
 
@@ -749,13 +750,52 @@ def generate_documents(
     expanded_snap = snap
     expansion_notes: list[str] = []
 
+    requested = {
+        name
+        for name, wanted in (
+            ("resume", document in ("both", "resume")),
+            ("cover_letter", document in ("both", "cover_letter")),
+        )
+        if wanted
+    }
+    stage_started = {name: time.perf_counter() for name in requested}
+    stage_completed: set[str] = set()
+
+    def complete_stage(name: str, stage_mode: str) -> None:
+        if name in stage_completed:
+            return
+        stage_completed.add(name)
+        if on_stage_complete is not None:
+            on_stage_complete(
+                f"{name}_writing",
+                round((time.perf_counter() - stage_started[name]) * 1000),
+                {"document_type": name, "mode": stage_mode},
+            )
+
+    def writing_call(name: str, call: Callable[[], Any]) -> Callable[[], Any]:
+        # The wrapper is also reused by focused transient retries.  Only a
+        # successful final result emits the completion, and its duration spans
+        # the initial call, backoff, and retry from the operator's perspective.
+        def run() -> Any:
+            value = call()
+            complete_stage(name, "ai")
+            return value
+
+        return run
+
     calls: dict[str, Callable[[], Any]] = {}
     if use_ai and document in ("both", "resume"):
-        calls["resume"] = lambda: ai_resume(  # type: ignore[arg-type]
-            ai, snap, req, company, raw_jd, application_id, previous_resume, section, instructions, density, semantic, exclude
+        calls["resume"] = writing_call(
+            "resume",
+            lambda: ai_resume(  # type: ignore[arg-type]
+                ai, snap, req, company, raw_jd, application_id, previous_resume, section, instructions, density, semantic, exclude
+            ),
         )
     if use_ai and document in ("both", "cover_letter"):
-        calls["cover"] = lambda: ai_cover_letter(ai, snap, req, company, job_title, raw_jd, application_id, instructions)  # type: ignore[arg-type]
+        calls["cover"] = writing_call(
+            "cover_letter",
+            lambda: ai_cover_letter(ai, snap, req, company, job_title, raw_jd, application_id, instructions),  # type: ignore[arg-type]
+        )
     outcomes = run_concurrently(calls)
     outcomes = retry_transient_calls(calls, outcomes)
     for value, error in outcomes.values():
@@ -777,6 +817,7 @@ def generate_documents(
             expanded_snap, expansion_notes = expand_snapshot(snap, req, semantic, exclude, job_text=raw_jd)
             fresh = deterministic_resume(expanded_snap, req, density)
             resume = merge_section(previous_resume, fresh, section) if previous_resume and section != "all" else fresh
+            complete_stage("resume", "deterministic")
 
     if document in ("both", "cover_letter"):
         value, error = outcomes.get("cover", (None, None))
@@ -789,6 +830,7 @@ def generate_documents(
                 notes.append(f"AI cover letter failed ({error}); used a deterministic cover letter.")
         if cover is None:
             cover = deterministic_cover_letter(snap, req, company, job_title)
+            complete_stage("cover_letter", "deterministic")
     return resume, cover, notes, mode, expanded_snap, expansion_notes
 
 

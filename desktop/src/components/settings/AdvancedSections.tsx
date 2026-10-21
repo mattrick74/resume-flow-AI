@@ -121,20 +121,6 @@ export function DocumentsSection({ settings }: { settings: AppSettings }) {
   const status = converter.data;
   return (
     <Section title="Documents" description="Layout is fixed by templates; AI never controls formatting.">
-      <Row
-        label="After generating"
-        htmlFor="export-mode"
-        hint={
-          settings.export_mode === "review"
-            ? "Every application waits in the Review Queue until you approve it."
-            : "The resume and cover letter files are saved as soon as the documents are written."
-        }
-      >
-        <NativeSelect id="export-mode" className="sm:w-80" value={settings.export_mode === "review" ? "review" : "auto"} onChange={(e) => void save({ export_mode: e.target.value as AppSettings["export_mode"] })}>
-          <option value="auto">Save files automatically</option>
-          <option value="review">Wait for my approval</option>
-        </NativeSelect>
-      </Row>
       <div className="flex items-start justify-between gap-6">
         <div>
           <Label htmlFor="skip-known-urls">Skip job URLs already in history</Label>

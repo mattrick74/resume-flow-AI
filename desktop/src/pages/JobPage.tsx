@@ -21,7 +21,7 @@ import { Progress } from "@/components/ui/progress";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Textarea } from "@/components/ui/textarea";
 import { api } from "@/lib/api";
-import { queryKeys, useJob, useJobMutation, useProcessJobs, useSettings } from "@/lib/queries";
+import { queryKeys, useJob, useJobMutation, useProcessJobs } from "@/lib/queries";
 import type { CandidateMatch, JobDetail, JobRequirements } from "@/lib/types";
 import { cn } from "@/lib/utils";
 
@@ -48,7 +48,6 @@ function JobView({ job }: { job: JobDetail }) {
   const [creating, setCreating] = useState(false);
   const [editing, setEditing] = useState(false);
   const [instructions, setInstructions] = useState("");
-  const autoExport = (useSettings().data?.settings.export_mode ?? "auto") !== "review";
 
   const saveRequirements = useJobMutation(job.id, (req: JobRequirements) => api.jobs.updateRequirements(job.id, req));
   const reanalyze = useJobMutation(job.id, () => api.jobs.analyze(job.id));
@@ -65,7 +64,7 @@ function JobView({ job }: { job: JobDetail }) {
     setCreating(true);
     try {
       const app = await api.applications.create({ job_id: job.id, candidate_id: match.candidate_id, override_reason: overrideReason ?? null, instructions: instructions.trim() || null });
-      toast.success(`Generating documents for ${match.candidate_name}`, { description: autoExport ? "The resume and cover letter files are saved as soon as they're ready." : "They'll wait in the Review Queue for your approval." });
+      toast.success(`Generating documents for ${match.candidate_name}`, { description: "The resume, cover letter and PDF files will be saved automatically." });
       navigate(`/applications/${app.id}`);
     } catch (error) {
       toast.error("Couldn't create the application", { description: describeError(error) });
@@ -83,7 +82,7 @@ function JobView({ job }: { job: JobDetail }) {
       { job_ids: [job.id] },
       {
         onSuccess: (result) => {
-          if (result.queued.length) toast.success("Queued — the tailored documents will appear in the Review Queue");
+          if (result.queued.length) toast.success("Queued — the tailored documents and PDFs will be saved automatically");
           else toast.info("Not queued", { description: result.skipped[0]?.reason });
           void client.invalidateQueries({ queryKey: queryKeys.job(job.id) });
         },

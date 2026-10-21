@@ -1,11 +1,9 @@
 import { useQuery } from "@tanstack/react-query";
 import {
   ArrowLeft,
-  BadgeCheck,
   Ban,
   Check,
   ChevronDown,
-  FileDown,
   FileText,
   FolderOpen,
   Gauge,
@@ -80,8 +78,6 @@ function ApplicationView({ app }: { app: ApplicationDetail }) {
   const [regenerate, setRegenerate] = useState<Regenerate | null>(null);
   const [outcome, setOutcome] = useState<Outcome | null>(null);
 
-  const approve = useApplicationMutation(id, (ack: boolean) => api.applications.approve(id, ack));
-  const exportApp = useApplicationMutation(id, () => api.applications.export(id));
   const retryPdf = useApplicationMutation(id, () => api.applications.retryPdf(id));
   const [instructions, setInstructions] = useState(app.instructions ?? "");
   const generate = useApplicationMutation(id, (r: Regenerate & { instructions: string }) =>
@@ -98,12 +94,10 @@ function ApplicationView({ app }: { app: ApplicationDetail }) {
   const canRegenerate = ["AWAITING_REVIEW", "APPROVED", "EXPORTED", "FAILED"].includes(app.status);
   const stepIndex = STEPS.findIndex((s) => s.states.includes(app.status));
 
-  const doApprove = () => approve.mutate(true, { onSuccess: () => toast.success("Documents approved"), onError: onError("Couldn't approve") });
-
   return (
     <div className="pb-10">
-      <Link to="/review" className="mb-3 inline-flex items-center gap-1 text-sm text-muted-foreground hover:text-foreground">
-        <ArrowLeft className="size-4" /> Review queue
+      <Link to="/applications" className="mb-3 inline-flex items-center gap-1 text-sm text-muted-foreground hover:text-foreground">
+        <ArrowLeft className="size-4" /> Applications
       </Link>
       <div className="mb-4 flex flex-wrap items-start gap-3">
         <div className="min-w-0 flex-1">
@@ -111,9 +105,6 @@ function ApplicationView({ app }: { app: ApplicationDetail }) {
             <h1 className="text-2xl font-semibold tracking-tight">{app.candidate_name}</h1>
             <StatusBadge status={app.status} />
             {app.selection_method === "manual_override" && <Badge variant="outline">Manual selection</Badge>}
-            {app.approved_by === "automatic" && ["APPROVED", "EXPORTED"].includes(app.status) && (
-              <Badge variant="secondary" title="Settings → After generating: export automatically">Exported automatically</Badge>
-            )}
           </div>
           <p className="mt-1 text-sm text-muted-foreground">
             <Link to={`/jobs/${app.job_id}`} className="hover:underline">
@@ -148,16 +139,6 @@ function ApplicationView({ app }: { app: ApplicationDetail }) {
                 ))}
               </DropdownMenuContent>
             </DropdownMenu>
-          )}
-          {app.status === "AWAITING_REVIEW" && (
-            <Button size="sm" disabled={approve.isPending} onClick={doApprove}>
-              <BadgeCheck /> Approve
-            </Button>
-          )}
-          {app.status === "APPROVED" && (
-            <Button size="sm" disabled={exportApp.isPending || Boolean(active)} onClick={() => exportApp.mutate(undefined, { onSuccess: () => toast.success("Export started"), onError: onError("Export failed") })}>
-              <FileDown /> Export files
-            </Button>
           )}
           {app.status === "EXPORTED" && (
             <Button size="sm" onClick={() => setOutcome("SUBMITTED")}>
@@ -230,11 +211,6 @@ function ApplicationView({ app }: { app: ApplicationDetail }) {
             ) : undefined
           }
         >
-          {app.error}
-        </Alert>
-      )}
-      {app.status === "AWAITING_REVIEW" && app.error && (
-        <Alert variant="warning" className="mb-4" title="Waiting for you">
           {app.error}
         </Alert>
       )}
@@ -511,8 +487,8 @@ function DocumentPane({ app, type }: { app: ApplicationDetail; type: DocType }) 
         </div>
       </div>
       {viewingOld && <div className="border-b bg-muted/60 px-3 py-1.5 text-xs text-muted-foreground">Viewing an earlier version (read-only).</div>}
-      {editing && app.status !== "AWAITING_REVIEW" && (
-        <div className="border-b bg-warning/10 px-3 py-1.5 text-xs">Saving sends this application back to review; the approved version is kept.</div>
+      {editing && (
+        <div className="border-b bg-warning/10 px-3 py-1.5 text-xs">Saving creates a new version and refreshes the exported files automatically.</div>
       )}
       <div className="min-h-0 flex-1 overflow-y-auto bg-muted/40 p-4">{body}</div>
     </Card>
@@ -532,7 +508,7 @@ function FilesPanel({ app }: { app: ApplicationDetail }) {
   if (!app.files.length)
     return (
       <Card className="p-6 text-sm text-muted-foreground">
-        {app.status === "APPROVED" ? "Approved. Export to write the DOCX, PDF, JD, URL and metadata files." : "Files are written when the approved application is exported."}
+        Files are written automatically after generation finishes.
       </Card>
     );
   return (

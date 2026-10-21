@@ -9,6 +9,7 @@ from the operator's own description of the work at that employer (GEN-03/04, VAL
 from __future__ import annotations
 
 import re
+import time
 from datetime import UTC, date, datetime
 from typing import Any, Literal
 from uuid import uuid4
@@ -898,7 +899,14 @@ def handle_match_job(ai: AIService):
             job = db.get(Job, ctx.job_id)
             if job is None or job.parsed_requirements_json is None:
                 return
-            run_matching(db, ai, job)
+            started = time.perf_counter()
+            result = run_matching(db, ai, job)
+            ctx.complete_stage(
+                "candidate_matching",
+                message="Candidate matching completed",
+                started_at=started,
+                details=result,
+            )
 
     return run
 

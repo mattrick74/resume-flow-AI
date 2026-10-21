@@ -16,7 +16,7 @@ from resumeflow.db.migrate import current_revision, upgrade_to_head
 from resumeflow.db.session import create_db_engine, create_session_factory
 from resumeflow.errors import install_error_handlers
 from resumeflow.services.ai.service import AIService, ProviderFactory
-from resumeflow.services.applications import register_handlers
+from resumeflow.services.applications import register_handlers, resume_automatic_exports
 from resumeflow.services.backups import auto_backup_if_due
 from resumeflow.services.batch import register_batch_handlers
 from resumeflow.services.experience import register_experience_handlers
@@ -58,6 +58,10 @@ def create_app(
         register_batch_handlers(queue, app.state.ai)
         register_experience_handlers(queue, app.state.ai)
         app.state.queue = queue
+        with session_factory() as db:
+            resumed = resume_automatic_exports(db, queue)
+        if resumed:
+            logger.info("Resumed automatic export for %s application(s)", resumed)
         if config.auto_backup:
             with session_factory() as db:
                 retention = load_settings(db).backup_retention_count

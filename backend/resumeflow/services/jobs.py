@@ -321,12 +321,16 @@ def _stated(value: str | None) -> str | None:
     return None if value is None or _NOT_STATED.match(value) else value.strip() or None
 
 
-def analyze_job(db: Session, ai: AIService | None, job: Job) -> Job:
+def analyze_job(db: Session, ai: AIService | None, job: Job, *, use_cache: bool = True) -> Job:
     job.status = PipelineStatus.ANALYZING
     db.commit()
     try:
-        cached = db.scalar(
-            select(Job).where(Job.jd_hash == job.jd_hash, Job.id != job.id, Job.parsed_requirements_json.is_not(None)).limit(1)
+        cached = (
+            db.scalar(
+                select(Job).where(Job.jd_hash == job.jd_hash, Job.id != job.id, Job.parsed_requirements_json.is_not(None)).limit(1)
+            )
+            if use_cache
+            else None
         )
         if cached is not None:
             requirements = JobRequirements.model_validate(cached.parsed_requirements_json)

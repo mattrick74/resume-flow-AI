@@ -27,6 +27,7 @@ import type {
   JobSummary,
   PdfConverterStatus,
   ProcessingJobInfo,
+  ProcessingStageEventsResponse,
   QueueResult,
   ReextractResult,
   ResumeContent,
@@ -214,6 +215,8 @@ export const api = {
   },
   processing: {
     list: (params: { status?: string; application_id?: string; limit?: number } = {}) => apiFetch<ProcessingJobInfo[]>(`/processing-jobs${query(params)}`),
+    events: (afterId?: number, limit = 200) =>
+      apiFetch<ProcessingStageEventsResponse>(`/processing-jobs/events${query({ after_id: afterId, limit })}`),
     retry: (id: string) => post<ProcessingJobInfo>(`/processing-jobs/${id}/retry`),
     cancel: (id: string) => post<ProcessingJobInfo>(`/processing-jobs/${id}/cancel`),
   },
