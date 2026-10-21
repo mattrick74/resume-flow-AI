@@ -68,6 +68,7 @@ def create_app(
             yield
         finally:
             queue.stop()
+            app.state.ai.close()
             engine.dispose()
 
     app = FastAPI(

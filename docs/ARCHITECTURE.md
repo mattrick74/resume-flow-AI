@@ -152,6 +152,13 @@ saves only PDFs; the DOCX is written only if no PDF can be made. Word conversion
 session proved unreliable over COM) with a retry; LibreOffice converts all documents in one run. Retry PDF re-renders the approved
 versions when no DOCX was kept.
 
+Writing requests keep the complete verified candidate evidence as a stable user-role prefix and put the changing job description
+after it. GPT-5.6-and-later models receive an explicit 30-minute prompt-cache breakpoint at that boundary; older configured models
+receive the same two-message input without unsupported cache controls. No candidate file or vector store is created, and API
+responses are not retained (`store=false`). Cache reads/writes are included in usage logging and estimated costs. The resume and
+cover-letter output ceilings are 6,000 and 3,000 tokens respectively, comfortably above measured production maxima while bounding
+runaway requests.
+
 ## 4f. Skipping job URLs already in history (1.6.0)
 
 With `settings.skip_known_urls` (default on), a job whose normalized URL matches an existing job is skipped, not saved:

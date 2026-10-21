@@ -6,6 +6,7 @@ import re
 import time
 from collections.abc import Callable
 from datetime import UTC, date, datetime, time as dtime
+from threading import Lock
 from typing import Literal, TypeVar
 
 from pydantic import BaseModel
@@ -21,6 +22,7 @@ from resumeflow.services.ai.provider import (
     AIUsage,
     BudgetExceeded,
     OpenAIProvider,
+    supports_explicit_prompt_caching,
 )
 from resumeflow.services.secrets import SecretStore
 from resumeflow.services.settings import AppSettings, load_settings
@@ -64,8 +66,15 @@ def estimate_cost_micros(prices: dict[str, dict[str, float]], model: str, usage:
         price = prices.get(_SNAPSHOT_SUFFIX.sub("", model))
     if price is None:
         return 0
+    input_tokens: float = usage.input_tokens
+    if supports_explicit_prompt_caching(model):
+        cached = min(usage.cached_input_tokens, usage.input_tokens)
+        written = min(usage.cache_write_input_tokens, usage.input_tokens - cached)
+        ordinary = max(usage.input_tokens - cached - written, 0)
+        read_multiplier = 0.05 if model.lower().startswith("gpt-6.1-sol") else 0.10
+        input_tokens = ordinary + cached * read_multiplier + written * 1.25
     # tokens / 1e6 * $/1M  ->  USD; * 1e6 -> micro-USD
-    return round(usage.input_tokens * price.get("input", 0) + usage.output_tokens * price.get("output", 0))
+    return round(input_tokens * price.get("input", 0) + usage.output_tokens * price.get("output", 0))
 
 
 def _local_day_start(day: date) -> datetime:
@@ -107,6 +116,9 @@ class AIService:
         self._session_factory = session_factory
         self._secret_store = secret_store
         self._provider_factory: ProviderFactory = provider_factory or (lambda key: OpenAIProvider(key))
+        self._provider_lock = Lock()
+        self._provider_key: str | None = None
+        self._provider_instance: AIProvider | None = None
 
     def available(self) -> bool:
         try:
@@ -118,7 +130,23 @@ class AIService:
         key = self._secret_store.get("openai_api_key")
         if not key:
             raise AIConfigError("Add your OpenAI API key in Settings to use AI features.")
-        return self._provider_factory(key)
+        # Reuse the SDK's connection pool. Constructing a fresh client for every
+        # AI call leaves many short-lived TLS pools behind and makes concurrent
+        # generation substantially less reliable.
+        with self._provider_lock:
+            if self._provider_instance is None or self._provider_key != key:
+                self._provider_instance = self._provider_factory(key)
+                self._provider_key = key
+            return self._provider_instance
+
+    def close(self) -> None:
+        with self._provider_lock:
+            provider = self._provider_instance
+            self._provider_instance = None
+            self._provider_key = None
+        close = getattr(provider, "close", None)
+        if callable(close):
+            close()
 
     def run(
         self,
@@ -131,6 +159,7 @@ class AIService:
         job_id: str | None = None,
         application_id: str | None = None,
         max_output_tokens: int = 16_000,
+        cache_prefix: str | None = None,
     ) -> T:
         with self._session_factory() as db:
             settings = load_settings(db)
@@ -154,6 +183,7 @@ class AIService:
                 input_text=input_text,
                 schema=schema,
                 max_output_tokens=max_output_tokens,
+                cache_prefix=cache_prefix,
             )
             return result
         except AIError as exc:

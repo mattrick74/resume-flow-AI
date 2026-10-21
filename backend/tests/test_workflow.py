@@ -322,8 +322,16 @@ def test_ai_documents_are_saved_as_written_without_a_checking_step(client, setup
         assert other.name not in generation_inputs
         assert other.email not in generation_inputs
 
+    resume_call = next(c for c in fake_ai.calls if c["schema"] == "AIResumeTailoring")
+    cover_call = next(c for c in fake_ai.calls if c["schema"] == "AICoverLetter")
+    assert "<candidate_evidence>" in resume_call["cache_prefix"]
+    assert "<job_description>" not in resume_call["cache_prefix"]
+    assert "<candidate_evidence>" in cover_call["cache_prefix"]
+    assert resume_call["max_output_tokens"] == 6_000
+    assert cover_call["max_output_tokens"] == 3_000
 
-def test_transient_failures_retry_then_succeed(client, setup, secret_store, fake_ai, db):
+
+def test_transient_document_failure_retries_only_failed_call(client, setup, secret_store, fake_ai, db):
     secret_store.set("openai_api_key", "sk-test-key-123456")
     calls = {"n": 0}
 
@@ -339,7 +347,9 @@ def test_transient_failures_retry_then_succeed(client, setup, secret_store, fake
     app = create(client, setup).json()
     drain(client)
     job = db.scalars(select(ProcessingJob).where(ProcessingJob.application_id == app["id"])).one()
-    assert job.status == ProcessingStatus.SUCCEEDED and job.retry_count == 1
+    assert job.status == ProcessingStatus.SUCCEEDED and job.retry_count == 0
+    assert calls["n"] == 2
+    assert len([call for call in fake_ai.calls if call["schema"] == "AICoverLetter"]) == 1
     assert client.get(f"/applications/{app['id']}").json()["status"] == "AWAITING_REVIEW"
 
 

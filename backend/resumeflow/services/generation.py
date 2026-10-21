@@ -11,6 +11,7 @@ Two modes, same output shape:
 from __future__ import annotations
 
 import re
+import time
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
 from datetime import date
@@ -43,6 +44,7 @@ from resumeflow.services.inference import (
     expansion_prompt_sections,
 )
 
+_TRANSIENT_RETRY_DELAYS_SECONDS = (0.5, 1.5)
 MAX_SKILLS = 24
 _STOP = set("the and for with from that this into your our you are will have has using use team work".split())
 # Bullets per role (Settings → Bullets per role): (recent roles), (older roles) as (minimum, maximum).
@@ -468,6 +470,12 @@ def ai_resume(
 ) -> tuple[ResumeContent, list[str], dict[str, Any], list[str]]:
     missing_skills = expansion_candidates(snap, req, exclude)
     hints = expansion_hints(snap, req, semantic, exclude)
+    candidate_prefix = "\n\n".join(
+        [
+            wrap("candidate_evidence", evidence_listing(snap)),
+            wrap("verified_skills", "\n".join(s["name"] for s in snap.get("skills", []))),
+        ]
+    )
     result = ai.run(
         operation=GenerationOperation.RESUME_GENERATION,
         role="writing",
@@ -475,8 +483,6 @@ def ai_resume(
         input_text="\n\n".join(
             [
                 _job_brief(req, company, raw_jd),
-                wrap("candidate_evidence", evidence_listing(snap)),
-                wrap("verified_skills", "\n".join(s["name"] for s in snap.get("skills", []))),
                 wrap(
                     "skills_shown_by_experience",
                     "\n".join(
@@ -501,7 +507,8 @@ def ai_resume(
         ),
         schema=AIResumeTailoring,
         application_id=application_id,
-        max_output_tokens=20_000,
+        max_output_tokens=6000,
+        cache_prefix=candidate_prefix,
     )
     expanded, expansion_notes = expand_snapshot(snap, req, semantic, exclude, result.placements, raw_jd)
     baseline = deterministic_resume(expanded, req, density)
@@ -693,10 +700,11 @@ def ai_cover_letter(
         operation=GenerationOperation.COVER_LETTER_GENERATION,
         role="writing",
         instructions=operator_notes(COVER_INSTRUCTIONS, instructions),
-        input_text=_job_brief(req, company, raw_jd) + "\n\n" + wrap("candidate_evidence", evidence_listing(snap)),
+        input_text=_job_brief(req, company, raw_jd),
         schema=AICoverLetter,
         application_id=application_id,
-        max_output_tokens=8000,
+        max_output_tokens=3000,
+        cache_prefix=wrap("candidate_evidence", evidence_listing(snap)),
     )
     return CoverLetterContent(
         date=date.today().strftime("%B %d, %Y").replace(" 0", " "),
@@ -749,9 +757,10 @@ def generate_documents(
     if use_ai and document in ("both", "cover_letter"):
         calls["cover"] = lambda: ai_cover_letter(ai, snap, req, company, job_title, raw_jd, application_id, instructions)  # type: ignore[arg-type]
     outcomes = run_concurrently(calls)
+    outcomes = retry_transient_calls(calls, outcomes)
     for value, error in outcomes.values():
         if isinstance(error, AIError) and error.transient:
-            raise error  # the queue retries the whole generation with backoff
+            raise error  # the queue retries the whole generation only after focused retries are exhausted
         if error is not None and not isinstance(error, AIError):
             raise error
 
@@ -796,3 +805,32 @@ def run_concurrently(calls: dict[str, Callable[[], Any]]) -> dict[str, tuple[Any
     with ThreadPoolExecutor(max_workers=len(calls), thread_name_prefix="ai") as pool:
         futures = {name: pool.submit(call) for name, call in calls.items()}
     return {name: (None, future.exception()) if future.exception() else (future.result(), None) for name, future in futures.items()}
+
+
+def retry_transient_calls(
+    calls: dict[str, Callable[[], Any]],
+    outcomes: dict[str, tuple[Any, BaseException | None]],
+    delays: tuple[float, ...] = _TRANSIENT_RETRY_DELAYS_SECONDS,
+) -> dict[str, tuple[Any, BaseException | None]]:
+    """Retry only failed transient requests, preserving successful concurrent results.
+
+    Retries run sequentially to avoid recreating the burst that may have interrupted the
+    original request. The processing queue remains the final, longer-backoff fallback.
+    """
+    for name, call in calls.items():
+        _, error = outcomes[name]
+        if not (isinstance(error, AIError) and error.transient):
+            continue
+        for delay in delays:
+            time.sleep(delay)
+            try:
+                outcomes[name] = (call(), None)
+                break
+            except AIError as exc:
+                outcomes[name] = (None, exc)
+                if not exc.transient:
+                    break
+            except Exception as exc:
+                outcomes[name] = (None, exc)
+                break
+    return outcomes
