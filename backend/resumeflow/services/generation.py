@@ -979,13 +979,12 @@ The final cover letter must make it immediately clear:
 # - Ensure all experience claims are supported by candidate evidence.
 
 def operator_notes(base: str, notes: str | None) -> str:
-    """The operator's own guidance (Settings default + this application). The hard rules above it always win."""
     notes = (notes or "").strip()
     if not notes:
         return base
     return (
-        f"{base}\n\nThe operator's preferences for this document. Follow them unless they conflict with the rules above,"
-        f" which always win (never add facts that aren't in the evidence):\n{notes[:4000]}"
+        f"{base}\n\nThe operator's preferences for this document."
+        f" The operator's preferences:\n{notes[:4000]}"
     )
 
 
