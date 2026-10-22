@@ -228,27 +228,27 @@ def _deterministic_rewrite(text: str, place: dict[str, Any]) -> str:
 # Keep every fact, number and technology of the original and add nothing else: no new tools, metrics,
 # scope or responsibilities, and no sentence from the job description. One sentence starting with an action verb.
 # <evidence_hints> is what an automatic search found; follow it unless the evidence clearly shows otherwise.
-EXPANSION_INSTRUCTIONS = f"""You find where a candidate's existing work experience shows job skills that their resume
+# EXPANSION_INSTRUCTIONS = f"""You find where a candidate's existing work experience shows job skills that their resume
 
 
-For every skill in <missing_job_skills>, return one entry with a classification:
-- "equivalent": an employer's bullet shows the candidate used this exact skill under another name, a more specific
-  form of it (Amazon EKS is Kubernetes, Next.js is React, C# is .NET) or an unambiguous description of it
-  ("serverless functions on AWS" are AWS Lambda).
-- "confirmed": <operator_confirmed> says the candidate used it at that employer; cite that employer's bullet where it
-  was used.
-- "related": similar but different work (Docker on ECS for Kubernetes, MySQL for PostgreSQL). That is NOT evidence of
-  the skill.
-- "none": nothing relevant.
+# For every skill in <missing_job_skills>, return one entry with a classification:
+# - "equivalent": an employer's bullet shows the candidate used this exact skill under another name, a more specific
+#   form of it (Amazon EKS is Kubernetes, Next.js is React, C# is .NET) or an unambiguous description of it
+#   ("serverless functions on AWS" are AWS Lambda).
+# - "confirmed": <operator_confirmed> says the candidate used it at that employer; cite that employer's bullet where it
+#   was used.
+# - "related": similar but different work (Docker on ECS for Kubernetes, MySQL for PostgreSQL). That is NOT evidence of
+#   the skill.
+# - "none": nothing relevant.
 
-employer_id: the R-... id of the single employer whose bullets show it best (most and strongest evidence; the more
-recent employer on a tie). evidence_ids: that employer's B-... ids, strongest first.
-bullet (equivalent or confirmed only, else empty): the FIRST cited bullet rewritten to name the skill exactly as the
-job writes it. 
+# employer_id: the R-... id of the single employer whose bullets show it best (most and strongest evidence; the more
+# recent employer on a tie). evidence_ids: that employer's B-... ids, strongest first.
+# bullet (equivalent or confirmed only, else empty): the FIRST cited bullet rewritten to name the skill exactly as the
+# job writes it. 
 
 
-Never mention verification, evidence, ids or this tool."""
-
+# Never mention verification, evidence, ids or this tool."""
+EXPANSION_INSTRUCTIONS = f""
 
 def expansion_candidates(snap: dict[str, Any], req: JobRequirements, exclude: set[str] | frozenset[str] = frozenset()) -> list[str]:
     """Job skills (display names) no employer's bullets name yet: what the AI expansion step is asked about."""
