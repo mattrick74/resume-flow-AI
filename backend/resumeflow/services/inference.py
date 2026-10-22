@@ -220,10 +220,16 @@ def _deterministic_rewrite(text: str, place: dict[str, Any]) -> str:
 
 # ---------------------------------------------------------------- AI proposals (one batched call)
 
+# doesn't name, and rewrite one bullet so it names the skill.
+# {UNTRUSTED_NOTICE}
 
+# Be strict: a related-but-different technology is "related", never "equivalent". Never assume.
+
+# Keep every fact, number and technology of the original and add nothing else: no new tools, metrics,
+# scope or responsibilities, and no sentence from the job description. One sentence starting with an action verb.
+# <evidence_hints> is what an automatic search found; follow it unless the evidence clearly shows otherwise.
 EXPANSION_INSTRUCTIONS = f"""You find where a candidate's existing work experience shows job skills that their resume
-doesn't name, and rewrite one bullet so it names the skill.
-{UNTRUSTED_NOTICE}
+
 
 For every skill in <missing_job_skills>, return one entry with a classification:
 - "equivalent": an employer's bullet shows the candidate used this exact skill under another name, a more specific
@@ -234,13 +240,13 @@ For every skill in <missing_job_skills>, return one entry with a classification:
 - "related": similar but different work (Docker on ECS for Kubernetes, MySQL for PostgreSQL). That is NOT evidence of
   the skill.
 - "none": nothing relevant.
-Be strict: a related-but-different technology is "related", never "equivalent". Never assume.
+
 employer_id: the R-... id of the single employer whose bullets show it best (most and strongest evidence; the more
 recent employer on a tie). evidence_ids: that employer's B-... ids, strongest first.
 bullet (equivalent or confirmed only, else empty): the FIRST cited bullet rewritten to name the skill exactly as the
-job writes it. Keep every fact, number and technology of the original and add nothing else: no new tools, metrics,
-scope or responsibilities, and no sentence from the job description. One sentence starting with an action verb.
-<evidence_hints> is what an automatic search found; follow it unless the evidence clearly shows otherwise.
+job writes it. 
+
+
 Never mention verification, evidence, ids or this tool."""
 
 

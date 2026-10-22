@@ -1827,6 +1827,10 @@ def ai_resume(
             wrap("verified_skills", "\n".join(s["name"] for s in snap.get("skills", []))),
         ]
     )
+
+    with open("1112321output.txt", "w", encoding="utf-8") as f:
+            f.write(operator_notes(resume_instructions(density) + "\n\n" + EXPANSION_INSTRUCTIONS, instructions))
+
     result = ai.run(
         operation=GenerationOperation.RESUME_GENERATION,
         role="writing",
