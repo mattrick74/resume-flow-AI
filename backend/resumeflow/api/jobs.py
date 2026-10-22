@@ -25,7 +25,7 @@ logger = logging.getLogger(__name__)
 class JobCreate(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    job_url: str = Field(min_length=8, max_length=2000)
+    job_url: str = Field(default="", max_length=2000)
     raw_jd: str = Field(min_length=1, max_length=100_000)
     company: str | None = Field(default=None, max_length=200)
     title: str | None = Field(default=None, max_length=200)

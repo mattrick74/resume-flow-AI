@@ -79,8 +79,8 @@ class AppSettings(BaseModel):
     pdf_converter: PdfConverter = "auto"
     export_mode: ExportMode = "auto"  # accepted for compatibility; the document pipeline no longer pauses for review
     output_formats: OutputFormats = "pdf"
-    # A job posting URL already in history (saved or generated before) is skipped instead of saved or generated again.
-    skip_known_urls: bool = True
+    # Legacy compatibility only. Duplicate jobs are always saved and processed.
+    skip_known_urls: bool = False
     # Off: every fact in a candidate's profile is used as entered (rejected skills excepted); no ticks or review step.
     require_verification: bool = False
     gap_confirmation: GapConfirmation = "off"

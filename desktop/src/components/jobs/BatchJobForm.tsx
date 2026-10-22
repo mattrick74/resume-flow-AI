@@ -27,9 +27,11 @@ interface Entry {
 const blank = (): Entry => ({ key: newId(), job_url: "", raw_jd: "", company: "", title: "" });
 const isBlank = (e: Entry) => !e.job_url.trim() && !e.raw_jd.trim() && !e.company.trim() && !e.title.trim();
 
-function validUrl(value: string) {
+function validOptionalUrl(value: string) {
+  const trimmed = value.trim();
+  if (!trimmed) return true;
   try {
-    const url = new URL(value.trim());
+    const url = new URL(trimmed);
     return url.protocol === "http:" || url.protocol === "https:";
   } catch {
     return false;
@@ -37,7 +39,7 @@ function validUrl(value: string) {
 }
 
 function localProblem(entry: Entry): string | null {
-  if (!validUrl(entry.job_url)) return "Enter the full posting URL starting with https://";
+  if (!validOptionalUrl(entry.job_url)) return "Enter the full posting URL starting with https://, or leave it blank";
   if (entry.raw_jd.trim().length < 50) return "Paste the full job description";
   return null;
 }
@@ -115,7 +117,7 @@ export function BatchJobForm() {
     setBusy(generate ? "generate" : "save");
     try {
       const response = await api.jobs.saveMany(
-        toSend.map((e) => ({ job_url: e.job_url.trim(), raw_jd: e.raw_jd, company: e.company.trim() || undefined, title: e.title.trim() || undefined })),
+        toSend.map((e) => ({ job_url: e.job_url.trim() || undefined, raw_jd: e.raw_jd, company: e.company.trim() || undefined, title: e.title.trim() || undefined })),
         { process: generate, confirm_duplicates: confirmDuplicates },
       );
       const byKey = new Map(response.results.map((r) => [toSend[r.index].key, r]));
@@ -159,7 +161,7 @@ export function BatchJobForm() {
   return (
     <div className="space-y-4">
       <p className="text-sm text-muted-foreground">
-        Add as many job descriptions as you like. Save them now and generate later from the Jobs page, or save and generate them all in one go.
+        Add as many job descriptions as you like. Posting URLs are optional. Save them now and generate later from the Jobs page, or save and generate them all in one go.
       </p>
       {entries.map((entry, index) => {
         const problem = entry.problem?.message ?? (showErrors && !isBlank(entry) ? localProblem(entry) : null);
@@ -173,7 +175,7 @@ export function BatchJobForm() {
               </Button>
             </div>
             <div className="grid gap-2 sm:grid-cols-[2fr_1fr_1fr]">
-              <Input value={entry.job_url} onChange={(e) => update(entry.key, { job_url: e.target.value })} placeholder="https://careers.example.com/jobs/123" aria-label={`Job ${index + 1} posting URL`} />
+              <Input value={entry.job_url} onChange={(e) => update(entry.key, { job_url: e.target.value })} placeholder="Posting URL (optional)" aria-label={`Job ${index + 1} posting URL`} />
               <Input value={entry.company} onChange={(e) => update(entry.key, { company: e.target.value })} placeholder="Company (optional)" aria-label={`Job ${index + 1} company`} />
               <Input value={entry.title} onChange={(e) => update(entry.key, { title: e.target.value })} placeholder="Title (optional)" aria-label={`Job ${index + 1} title`} />
             </div>
@@ -208,7 +210,7 @@ export function BatchJobForm() {
         <Button variant="outline" size="sm" onClick={() => fileInput.current?.click()}>
           <FileUp /> Import .txt files
         </Button>
-        <span className="text-xs text-muted-foreground">One job per file; a URL on the first line is picked up automatically.</span>
+        <span className="text-xs text-muted-foreground">One job per file; an optional URL on the first line is picked up automatically.</span>
       </div>
 
       {hasDuplicates && (

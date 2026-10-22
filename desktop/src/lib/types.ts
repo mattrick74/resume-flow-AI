@@ -56,7 +56,7 @@ export interface AppSettings {
   export_mode: "review" | "auto" | "always";
   /** pdf: save PDFs only (the Word file is kept only if no PDF can be made). pdf_docx: save both. */
   output_formats: "pdf" | "pdf_docx";
-  /** A job whose posting URL is already in history is skipped: not saved again and not generated again. */
+  /** Legacy setting retained for older backends; current versions always process duplicate jobs. */
   skip_known_urls: boolean;
   /** Off (default): every fact in a profile is used as entered, except rejected skills. On: only ticked facts after review. */
   require_verification: boolean;
@@ -442,13 +442,13 @@ export interface JobSummary {
 
 export interface BatchItemResult {
   index: number;
-  /** skipped: the posting URL is already in history, so nothing new was saved. */
+  /** duplicate/skipped remain accepted for compatibility with older backends. */
   status: "created" | "duplicate" | "skipped" | "invalid";
   job?: JobSummary;
   code?: string;
   message?: string;
   details?: { matches?: DuplicateMatch[] } | unknown;
-  /** Set when a skipped posting had only been saved before: that earlier job is being generated instead. */
+  /** Legacy response field used when an older backend resumes a previously saved job. */
   queued_job_id?: string;
 }
 

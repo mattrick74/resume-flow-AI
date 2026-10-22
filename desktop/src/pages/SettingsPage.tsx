@@ -191,7 +191,7 @@ function SettingsForm({ data }: { data: SettingsResponse }) {
       <MatchingWeightsSection settings={saved} />
 
       <Section title="Output" description="Where exported documents are written. Existing files are never overwritten.">
-        <Row label="Output folder" htmlFor="output_root" hint="Applications are saved as YYYY-MM-DD\Candidate_Name\site (e.g. dice.com)\Position_-_url\ inside this folder." error={errors.output_root}>
+        <Row label="Output folder" htmlFor="output_root" hint="Jobs without a URL are saved as instant resumes/MM-DD-YYYY/title. Jobs with a URL keep the normal dated candidate/site folder layout." error={errors.output_root}>
           {field("output_root", { spellCheck: false })}
         </Row>
       </Section>
@@ -224,7 +224,7 @@ function SettingsForm({ data }: { data: SettingsResponse }) {
 
       <ModelPricesSection settings={saved} />
 
-      <Section title="Privacy" description="The job URL is kept as a record of the source and is not visited unless you allow it.">
+      <Section title="Privacy" description="When you provide a job URL, it is kept as a source record and is not visited unless you allow it.">
         <div className="flex items-start justify-between gap-6">
           <div>
             <Label htmlFor="auto_fetch_job_urls">Fetch job pages automatically</Label>

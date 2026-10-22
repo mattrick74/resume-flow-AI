@@ -159,13 +159,13 @@ describe("one job, saved for later", () => {
         call.method === "POST" && call.path === "/jobs/batch" ? json({ results: [{ index: 0, status: "created", job: jobSummary() }], queued: [], skipped: [] }, 201) : undefined,
     });
     renderApp("/jobs/new");
-    await userEvent.type(await screen.findByLabelText("Job posting URL"), "https://jobs.example.com/1");
+    await userEvent.type(await screen.findByLabelText(/Job posting URL/), "https://jobs.example.com/1");
     await paste(screen.getByLabelText("Job description"), JD);
     await userEvent.click(screen.getByRole("button", { name: "Save for later" }));
     expect(await screen.findByText("Saved for later")).toBeInTheDocument();
     expect(calls.find((c) => c.path === "/jobs/batch")?.body).toEqual({ items: [{ job_url: "https://jobs.example.com/1", raw_jd: JD }], confirm_duplicates: false });
     expect(calls.some((c) => c.path === "/jobs" && c.method === "POST")).toBe(false);
-    expect(screen.getByLabelText("Job posting URL")).toHaveValue("");
+    expect(screen.getByLabelText(/Job posting URL/)).toHaveValue("");
   });
 
   it("points to the earlier job when the URL is already in history", async () => {
@@ -185,7 +185,7 @@ describe("one job, saved for later", () => {
           : undefined,
     });
     renderApp("/jobs/new");
-    await userEvent.type(await screen.findByLabelText("Job posting URL"), "https://jobs.example.com/1");
+    await userEvent.type(await screen.findByLabelText(/Job posting URL/), "https://jobs.example.com/1");
     await paste(screen.getByLabelText("Job description"), JD);
     await userEvent.click(screen.getByRole("button", { name: /Analyze & match/ }));
     const dialog = await screen.findByRole("dialog");

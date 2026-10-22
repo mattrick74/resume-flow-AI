@@ -50,7 +50,7 @@ describe("new job", () => {
       },
     });
     renderApp("/jobs/new");
-    await userEvent.type(await screen.findByLabelText("Job posting URL"), "https://jobs.example.com/1");
+    await userEvent.type(await screen.findByLabelText(/Job posting URL/), "https://jobs.example.com/1");
     await userEvent.type(screen.getByLabelText("Job description"), "Data Engineer. We need Python, SQL and five years of experience building pipelines on AWS.");
     await userEvent.click(screen.getByRole("button", { name: /analyze & match/i }));
 
@@ -64,11 +64,20 @@ describe("new job", () => {
   it("validates the URL and description before calling the engine", async () => {
     const { calls } = mockBackend();
     renderApp("/jobs/new");
-    await userEvent.type(await screen.findByLabelText("Job posting URL"), "not a url");
+    await userEvent.type(await screen.findByLabelText(/Job posting URL/), "not a url");
     await userEvent.click(screen.getByRole("button", { name: /analyze & match/i }));
     expect(await screen.findByText(/Enter the full posting URL/)).toBeInTheDocument();
     expect(screen.getByText("Paste the full job description")).toBeInTheDocument();
     expect(calls.some((c) => c.path === "/jobs" && c.method === "POST")).toBe(false);
+  });
+
+  it("accepts a job description without a posting URL", async () => {
+    const { calls } = mockBackend();
+    renderApp("/jobs/new");
+    await userEvent.type(screen.getByLabelText("Job description"), "Data Engineer. We need Python, SQL and five years of experience building pipelines on AWS.");
+    await userEvent.click(screen.getByRole("button", { name: /analyze & match/i }));
+    await waitFor(() => expect(calls.some((c) => c.path === "/jobs" && c.method === "POST")).toBe(true));
+    expect(calls.find((c) => c.path === "/jobs" && c.method === "POST")?.body).not.toHaveProperty("job_url");
   });
 });
 

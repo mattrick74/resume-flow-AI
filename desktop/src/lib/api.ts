@@ -115,7 +115,7 @@ export interface CandidateUpdate {
 }
 
 export interface JobCreate {
-  job_url: string;
+  job_url?: string;
   raw_jd: string;
   company?: string;
   title?: string;

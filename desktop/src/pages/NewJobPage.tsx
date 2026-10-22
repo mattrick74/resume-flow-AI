@@ -24,9 +24,11 @@ import { cn, formatRelativeTime } from "@/lib/utils";
 const EMPTY: JobCreate = { job_url: "", raw_jd: "", company: "", title: "", recruiter: "", rate: "", location: "", employment_type: "", notes: "" };
 const REASON = { same_url: "Same posting URL", same_text: "Identical description", similar_text: "Very similar description" };
 
-function validUrl(value: string) {
+function validOptionalUrl(value?: string) {
+  const trimmed = value?.trim() ?? "";
+  if (!trimmed) return true;
   try {
-    const url = new URL(value.trim());
+    const url = new URL(trimmed);
     return url.protocol === "http:" || url.protocol === "https:";
   } catch {
     return false;
@@ -47,13 +49,13 @@ export function NewJobPage() {
   const [duplicates, setDuplicates] = useState<{ matches: DuplicateMatch[]; action: "analyze" | "save"; skipped?: boolean } | null>(null);
   const client = useQueryClient();
 
-  const urlError = submitted && !validUrl(form.job_url) ? "Enter the full posting URL starting with https://" : null;
+  const urlError = submitted && !validOptionalUrl(form.job_url) ? "Enter the full posting URL starting with https://, or leave it blank" : null;
   const jdError = submitted && form.raw_jd.trim().length < 50 ? "Paste the full job description" : null;
   const set = (key: keyof JobCreate, value: string) => setForm((f) => ({ ...f, [key]: value }));
 
   const submit = async (action: "analyze" | "save" = "analyze", confirmDuplicate = false) => {
     setSubmitted(true);
-    if (!validUrl(form.job_url) || form.raw_jd.trim().length < 50) return;
+    if (!validOptionalUrl(form.job_url) || form.raw_jd.trim().length < 50) return;
     setBusy(action);
     const clean = Object.fromEntries(Object.entries(form).map(([k, v]) => [k, typeof v === "string" ? v.trim() || undefined : v])) as unknown as JobCreate;
     try {
@@ -88,7 +90,7 @@ export function NewJobPage() {
   const ready = summary.data?.candidates_ready ?? null;
   return (
     <>
-      <PageHeader title="New Job" description="Paste job descriptions and posting URLs. Both are kept exactly as entered; URLs are never visited." />
+      <PageHeader title="New Job" description="Paste each job description. A posting URL is optional and is never visited unless you enable automatic fetching." />
       {ready === 0 && (
         <Alert variant="warning" title="No candidates are ready for matching" className="mb-4" action={<Button asChild variant="outline" size="sm"><Link to="/candidates">Review candidates</Link></Button>}>
           Import resumes and confirm each candidate's authorization first{verificationRequired ? ", then verify their details and complete each review" : ""}.
@@ -123,9 +125,9 @@ export function NewJobPage() {
       >
         <Card className="space-y-4 p-5">
           <div className="space-y-1.5">
-            <Label htmlFor="job-url">Job posting URL</Label>
-            <Input id="job-url" value={form.job_url} onChange={(e) => set("job_url", e.target.value)} placeholder="https://careers.example.com/jobs/123" aria-invalid={urlError ? true : undefined} autoFocus />
-            {urlError && <p className="text-xs text-destructive">{urlError}</p>}
+            <Label htmlFor="job-url">Job posting URL <span className="font-normal text-muted-foreground">(optional)</span></Label>
+            <Input id="job-url" value={form.job_url ?? ""} onChange={(e) => set("job_url", e.target.value)} placeholder="https://careers.example.com/jobs/123" aria-invalid={urlError ? true : undefined} autoFocus />
+            <p className={cn("text-xs text-muted-foreground", urlError && "text-destructive")}>{urlError ?? "Leave blank when the posting has no URL."}</p>
           </div>
           <div className="space-y-1.5">
             <Label htmlFor="job-jd">Job description</Label>

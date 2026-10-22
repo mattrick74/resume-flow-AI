@@ -5,7 +5,7 @@ import pytest
 from resumeflow.devtools.sample_data import SAMPLE_CANDIDATES, SAMPLE_JOBS
 from resumeflow.domain.requirements import JobRequirements
 from resumeflow.domain.skills import normalize_skill
-from resumeflow.services.jobs import heuristic_requirements, normalize_url
+from resumeflow.services.jobs import heuristic_confidence, heuristic_requirements, normalize_url
 from resumeflow.services.matching import classify_candidate_authorization, classify_job_authorization
 from resumeflow.services.settings import AppSettings
 from tests.conftest import make_ready, upload
@@ -33,21 +33,31 @@ def test_url_normalization():
         normalize_url("ftp://example.com/x")
 
 
-def test_duplicate_detection(client):
+def test_duplicate_jobs_are_saved_independently(client):
     first = client.post("/jobs", json=_job_payload(analyze=False))
     assert first.status_code == 201, first.text
 
     same_url = client.post("/jobs", json=_job_payload(raw_jd=SAMPLE_JOBS[1]["text"], analyze=False))
-    assert same_url.status_code == 409
-    assert same_url.json()["error"]["details"]["matches"][0]["reason"] == "same_url"
+    assert same_url.status_code == 201, same_url.text
+    assert same_url.json()["id"] != first.json()["id"]
 
     tweaked = SAMPLE_JOBS[0]["text"].replace("analytics products", "analytics product suite")
     similar = client.post("/jobs", json=_job_payload(job_url="https://other.example.com/job/9", raw_jd=tweaked, analyze=False))
-    assert similar.status_code == 409
-    assert similar.json()["error"]["details"]["matches"][0]["reason"] == "similar_text"
+    assert similar.status_code == 201, similar.text
 
     confirmed = client.post("/jobs", json=_job_payload(job_url="https://other.example.com/job/9", raw_jd=tweaked, analyze=False, confirm_duplicate=True))
     assert confirmed.status_code == 201
+
+
+def test_job_url_is_optional(client):
+    first = client.post("/jobs", json={"raw_jd": SAMPLE_JOBS[0]["text"], "analyze": False})
+    second = client.post("/jobs", json={"job_url": "   ", "raw_jd": SAMPLE_JOBS[0]["text"], "analyze": False})
+
+    assert first.status_code == 201, first.text
+    assert second.status_code == 201, second.text
+    assert first.json()["job_url"] == first.json()["normalized_url"] == ""
+    assert second.json()["job_url"] == second.json()["normalized_url"] == ""
+    assert first.json()["id"] != second.json()["id"]
 
 
 def test_prompt_injection_is_flagged(client):
@@ -67,6 +77,183 @@ def test_heuristic_requirements():
     assert req.location == "Austin, TX"
     assert req.seniority == "senior"
     assert "without sponsorship" in (req.work_authorization or "")
+
+
+def test_clear_structured_jd_is_high_confidence():
+    sample = SAMPLE_JOBS[0]
+    req = heuristic_requirements(sample["text"], set(), sample["title"], sample["company"])
+    confidence = heuristic_confidence(sample["text"], req, set(), supplied_title=sample["title"])
+    assert confidence.sufficient
+    assert confidence.score >= 0.8
+
+
+def test_mixed_known_and_unknown_required_technologies_need_ai_fallback():
+    text = """Platform Engineer
+Example Systems - Remote
+
+Responsibilities
+- Build reliable services and deployment automation for production teams
+- Maintain Python services and observability tooling
+
+Required Skills
+- 3+ years of platform engineering experience
+- Experience with Python, LangGraph and Temporal
+"""
+    req = heuristic_requirements(text, set(), "Platform Engineer", "Example Systems")
+    confidence = heuristic_confidence(text, req, set(), supplied_title="Platform Engineer")
+
+    assert not confidence.sufficient
+    assert "a technology list contained tools outside the local vocabulary" in confidence.reasons
+
+    bare_list = text.replace("Experience with Python, LangGraph and Temporal", "Python, LangGraph and Temporal")
+    bare_req = heuristic_requirements(bare_list, set(), "Platform Engineer", "Example Systems")
+    assert not heuristic_confidence(bare_list, bare_req, set(), supplied_title="Platform Engineer").sufficient
+
+    spaced_slash = text.replace("Experience with Python, LangGraph and Temporal", "Python / Temporal")
+    slash_req = heuristic_requirements(spaced_slash, set(), "Platform Engineer", "Example Systems")
+    assert not heuristic_confidence(spaced_slash, slash_req, set(), supplied_title="Platform Engineer").sufficient
+
+    later_cue = text.replace(
+        "Experience with Python, LangGraph and Temporal",
+        "Experience building Python services using Temporal",
+    )
+    cue_req = heuristic_requirements(later_cue, set(), "Platform Engineer", "Example Systems")
+    cue_confidence = heuristic_confidence(later_cue, cue_req, set(), supplied_title="Platform Engineer")
+    assert not cue_confidence.sufficient
+    assert "a required technology after a technology cue was outside the local vocabulary" in cue_confidence.reasons
+
+    unknown_using = text.replace("Experience with Python, LangGraph and Temporal", "Using Temporal")
+    using_req = heuristic_requirements(unknown_using, set(), "Platform Engineer", "Example Systems")
+    assert not heuristic_confidence(unknown_using, using_req, set(), supplied_title="Platform Engineer").sufficient
+
+    separate_bullets = text.replace(
+        "Experience with Python, LangGraph and Temporal",
+        "Python\n- langgraph\n- temporal",
+    )
+    separate_req = heuristic_requirements(separate_bullets, set(), "Platform Engineer", "Example Systems")
+    assert not heuristic_confidence(separate_bullets, separate_req, set(), supplied_title="Platform Engineer").sufficient
+
+
+def test_common_jd_headings_stay_on_fast_local_path():
+    text = """Backend Engineer
+Example Systems - Remote
+FULL TIME
+UNITED STATES
+JOB ID 123
+
+Job Responsibilities
+- Build reliable Python services for customer-facing products
+- Maintain SQL data pipelines and AWS infrastructure
+
+Minimum Requirements
+- Python
+- SQL
+- Bachelor's degree in Computer Science
+- Excellent written and verbal communication skills
+- Fast learner
+- Team player
+- Strong work ethic
+- Results oriented
+- Hands-on problem-solving ability
+- Ability to make decisions using sound judgment
+
+Required Experience
+- Experience with AWS
+
+Preferred Skills
+- Docker
+
+Compensation
+- Competitive salary, annual bonus and optional health coverage
+
+EEO Statement
+- We do not discriminate based on family responsibilities
+
+Why join us
+- Work with a supportive engineering team
+"""
+    req = heuristic_requirements(text, set(), "Backend Engineer", "Example Systems")
+    confidence = heuristic_confidence(text, req, set(), supplied_title="Backend Engineer")
+
+    assert confidence.sufficient
+    assert len(req.duties) == 2
+    assert {normalize_skill(skill) for skill in req.mandatory_skills} >= {"python", "sql", "amazon web services"}
+
+
+def test_headingless_responsibilities_need_ai_fallback():
+    text = """Backend Engineer
+Example Systems - Remote
+
+Building reliable Python services for customer-facing products
+Responsible for maintaining SQL data pipelines and AWS infrastructure
+
+Required Skills
+- Python
+- SQL
+- AWS
+"""
+    req = heuristic_requirements(text, set(), "Backend Engineer", "Example Systems")
+    confidence = heuristic_confidence(text, req, set(), supplied_title="Backend Engineer")
+
+    assert not confidence.sufficient
+    assert "responsibilities were not classified locally" in confidence.reasons
+
+
+def test_unknown_section_heading_needs_ai_fallback():
+    text = """Backend Engineer
+Example Systems - Remote
+
+Responsibilities
+- Build reliable Python services for customer-facing products
+- Maintain SQL data pipelines and AWS infrastructure
+
+Requirements
+- Python
+- SQL
+- AWS
+
+Our Secret Sauce
+- Familiarity with an internal orchestration platform
+"""
+    req = heuristic_requirements(text, set(), "Backend Engineer", "Example Systems")
+    confidence = heuristic_confidence(text, req, set(), supplied_title="Backend Engineer")
+
+    assert not confidence.sufficient
+    assert "an unrecognized section heading could change requirement classification" in confidence.reasons
+
+
+def test_explicit_industry_requirement_needs_ai_fallback():
+    text = """Data Engineer
+Example Health - Remote
+
+Responsibilities
+- Build reliable Python services for clinical data products
+- Maintain SQL pipelines and AWS infrastructure
+
+Required Skills
+- Python
+- SQL
+- AWS
+- Healthcare industry experience
+"""
+    req = heuristic_requirements(text, set(), "Data Engineer", "Example Health")
+    confidence = heuristic_confidence(text, req, set(), supplied_title="Data Engineer")
+
+    assert not confidence.sufficient
+    assert "an industry or domain requirement was not classified locally" in confidence.reasons
+
+    overview_only = text.replace(
+        "- Healthcare industry experience",
+        "\nAbout the company\nWe are a healthcare company serving hospitals across the country",
+    )
+    overview_req = heuristic_requirements(overview_only, set(), "Data Engineer", "Example Health")
+    overview_confidence = heuristic_confidence(overview_only, overview_req, set(), supplied_title="Data Engineer")
+    assert overview_confidence.sufficient
+
+    years_only = text.replace("Healthcare industry experience", "5+ years in healthcare")
+    years_req = heuristic_requirements(years_only, set(), "Data Engineer", "Example Health")
+    years_confidence = heuristic_confidence(years_only, years_req, set(), supplied_title="Data Engineer")
+    assert "an industry or domain requirement was not classified locally" in years_confidence.reasons
 
 
 @pytest.mark.parametrize(
@@ -149,13 +336,24 @@ def test_ai_analysis_and_cache(client, secret_store, fake_ai):
         security_clearance=None, required_credentials=[], employment_type=None, other_hard_requirements=[],
     )
     fake_ai.on("JobRequirements", lambda text: requirements)
-    first = client.post("/jobs", json=_job_payload(1)).json()
+    ambiguous = SAMPLE_JOBS[1]["text"] + "\nRequired\n- Hands-on experience with AuroraCanvas orchestration"
+    first = client.post("/jobs", json=_job_payload(1, raw_jd=ambiguous)).json()
     assert first["requirements_source"] == "ai"
     assert "<job_description>" in fake_ai.calls[0]["input"]
     calls = len(fake_ai.calls)
-    second = client.post("/jobs", json=_job_payload(1, job_url="https://elsewhere.example.com/fe", confirm_duplicate=True)).json()
+    second = client.post(
+        "/jobs",
+        json=_job_payload(1, raw_jd=ambiguous, job_url="https://elsewhere.example.com/fe", confirm_duplicate=True),
+    ).json()
     assert second["requirements_source"] == "cache"
     assert len(fake_ai.calls) == calls  # no new AI call for an identical JD
+
+
+def test_clear_jd_uses_fast_local_extraction_even_with_api_key(client, secret_store, fake_ai):
+    secret_store.set("openai_api_key", "sk-test-key-123456")
+    job = client.post("/jobs", json=_job_payload()).json()
+    assert job["requirements_source"] == "heuristic"
+    assert not [call for call in fake_ai.calls if call["schema"] == "JobRequirements"]
 
 
 def test_semantic_match_requires_real_evidence(client, secret_store, fake_ai, ten_candidates):
@@ -201,7 +399,8 @@ def test_semantic_match_requires_real_evidence(client, secret_store, fake_ai, te
         return {"matches": matches}
 
     fake_ai.on("SemanticMatches", semantic)
-    job = client.post("/jobs", json=_job_payload(1, job_url="https://q.example.com/1")).json()
+    ambiguous = SAMPLE_JOBS[1]["text"] + "\nRequired\n- Hands-on experience with Quantum Annealing"
+    job = client.post("/jobs", json=_job_payload(1, raw_jd=ambiguous, job_url="https://q.example.com/1")).json()
     some = next(m for m in job["matches"] if m["rank"] == 1)
     mandatory = some["details"]["components"]["mandatory_skills"]
     assert "Quantum annealing" in mandatory["missing"]
@@ -230,7 +429,8 @@ def test_semantic_match_is_skipped_for_one_candidate(client, secret_store, fake_
     )
     fake_ai.on("JobRequirements", lambda text: requirements)
 
-    job = client.post("/jobs", json=_job_payload(1, job_url="https://single.example.com/1"))
+    ambiguous = SAMPLE_JOBS[1]["text"] + "\nRequired\n- Hands-on experience with Stream Processing"
+    job = client.post("/jobs", json=_job_payload(1, raw_jd=ambiguous, job_url="https://single.example.com/1"))
 
     assert job.status_code == 201, job.text
     assert [call["schema"] for call in fake_ai.calls] == ["JobRequirements"]

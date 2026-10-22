@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import hashlib
+import logging
 import re
-from datetime import UTC, datetime, timedelta
+from dataclasses import dataclass
+from datetime import UTC, datetime
 from typing import Any
 from urllib.parse import parse_qsl, urlencode, urlsplit
 
@@ -20,8 +22,9 @@ from resumeflow.services.ai.provider import AIError
 from resumeflow.services.ai.service import UNTRUSTED_NOTICE, AIService, wrap
 from resumeflow.services.settings import load_settings
 
+logger = logging.getLogger(__name__)
+
 _TRACKING_PARAMS = {"gclid", "fbclid", "ref", "refid", "source", "src", "trk", "trackingid", "mc_cid", "mc_eid", "_hsenc", "_hsmi", "lipi"}
-SIMILARITY_THRESHOLD = 0.85
 
 
 def _now() -> datetime:
@@ -49,18 +52,6 @@ def jd_fingerprint(text: str) -> str:
     return hashlib.sha256(_normalize_jd(text).encode()).hexdigest()
 
 
-def _shingles(text: str, size: int = 5) -> set[int]:
-    words = re.findall(r"\w+", text.lower())
-    if len(words) < size:
-        return {hash(" ".join(words))}
-    return {hash(" ".join(words[i : i + size])) for i in range(len(words) - size + 1)}
-
-
-def similarity(a: str, b: str) -> float:
-    sa, sb = _shingles(a), _shingles(b)
-    return len(sa & sb) / len(sa | sb) if sa and sb else 0.0
-
-
 _INJECTION_PATTERNS = [
     r"ignore (?:all |any |the )?(?:previous|prior|above|earlier) (?:instructions|prompts|rules)",
     r"disregard (?:all |any |the )?(?:previous|prior|above) ",
@@ -77,40 +68,15 @@ def detect_prompt_injection(text: str) -> list[str]:
     return [p for p in _INJECTION_PATTERNS if re.search(p, lowered)]
 
 
-def find_duplicates(db: Session, normalized_url: str, fingerprint: str, raw_jd: str, exclude_id: str | None = None) -> list[dict[str, Any]]:
-    matches: dict[str, dict[str, Any]] = {}
-    for job in db.scalars(select(Job).where((Job.normalized_url == normalized_url) | (Job.jd_hash == fingerprint))):
-        if job.id == exclude_id:
-            continue
-        reason = "same_url" if job.normalized_url == normalized_url else "same_text"
-        matches[job.id] = {"job_id": job.id, "title": job.title, "company": job.company, "created_at": job.created_at, "reason": reason, "similarity": 1.0}
-    length = len(raw_jd)
-    recent = db.scalars(
-        select(Job).where(Job.created_at >= _now() - timedelta(days=120)).order_by(Job.created_at.desc()).limit(1000)
-    )
-    for job in recent:
-        if job.id in matches or job.id == exclude_id or not (0.6 * length <= len(job.raw_jd) <= 1.6 * length):
-            continue
-        score = similarity(raw_jd, job.raw_jd)
-        if score >= SIMILARITY_THRESHOLD:
-            matches[job.id] = {"job_id": job.id, "title": job.title, "company": job.company, "created_at": job.created_at, "reason": "similar_text", "similarity": round(score, 3)}
-    return list(matches.values())
-
-
 def create_job(db: Session, payload: dict[str, Any], *, confirm_duplicate: bool = False) -> Job:
     raw_jd = (payload.get("raw_jd") or "").strip()
     if len(raw_jd) < 50:
         raise AppError(422, "jd_too_short", "Paste the full job description (at least a few sentences).")
     url = (payload.get("job_url") or "").strip()
-    normalized = normalize_url(url)
+    normalized = normalize_url(url) if url else ""
     fingerprint = jd_fingerprint(raw_jd)
-    duplicates = find_duplicates(db, normalized, fingerprint, raw_jd)
-    same_url = [m for m in duplicates if m["reason"] == "same_url"]
-    if same_url and load_settings(db).skip_known_urls:
-        # The same posting is already in history: skip it (Settings → "Skip job URLs already in history").
-        raise AppError(409, "url_in_history", "This job posting is already in your history, so it was skipped.", {"matches": same_url})
-    if duplicates and not confirm_duplicate:
-        raise AppError(409, "duplicate_job", "This job looks like one you've already entered.", {"matches": duplicates})
+    # ``confirm_duplicate`` remains in the API for compatibility. Repeated URLs
+    # and descriptions are always saved as independent jobs and fully processed.
     warnings = []
     if detect_prompt_injection(raw_jd):
         warnings.append(
@@ -142,26 +108,178 @@ def get_job(db: Session, job_id: str) -> Job:
 # ---------------------------------------------------------------- analysis
 
 _REQUIRED_HEADINGS = re.compile(
-    r"^(?:requirements|required|qualifications|minimum qualifications|basic qualifications|required qualifications|"
-    r"must[- ]haves?|what you(?:'ll)? (?:need|bring)|who you are|skills(?: and experience)?|experience|you have)\s*:?$",
+    r"^(?:requirements|minimum requirements|required|required skills|skills required|required experience|qualifications|"
+    r"minimum qualifications|basic qualifications|required qualifications|must[- ]haves?|"
+    r"what you(?:['’]ll| will)? (?:need|bring)|"
+    r"what we(?:['’]re| are) looking for|what we(?:['’]re| are) seeking|who you are|"
+    r"about you|candidate profile|your profile|ideal candidate|skills(?: and experience)?|experience|you have)\s*:?$",
     re.IGNORECASE,
 )
 _PREFERRED_HEADINGS = re.compile(
-    r"^(?:preferred|preferred qualifications|nice[- ]to[- ]haves?|bonus(?: points)?|pluses|desired(?: skills| qualifications)?|"
+    r"^(?:preferred|preferred skills|preferred qualifications|nice[- ]to[- ]haves?|bonus(?: points)?|pluses|desired(?: skills| qualifications)?|"
     r"additional qualifications|it's a plus if)\s*:?$",
     re.IGNORECASE,
 )
 _DUTY_HEADINGS = re.compile(
-    r"^(?:responsibilities|key responsibilities|what you(?:'ll)? do|duties|the role|role|your impact|day[- ]to[- ]day|about the role)\s*:?$",
+    r"^(?:responsibilities|job responsibilities|key responsibilities|responsibilities and duties|key duties|essential functions|"
+    r"what you(?:['’]ll| will)? (?:do|be doing|work on)|duties|the role|role|your impact|"
+    r"day[- ]to[- ]day|about the role)\s*:?$",
     re.IGNORECASE,
 )
-_OTHER_HEADING = re.compile(r"^(?:about (?:us|the company)|benefits|perks|compensation|salary|equal opportunity|eeo|how to apply)\s*:?$", re.IGNORECASE)
+_OTHER_HEADING = re.compile(
+    r"^(?:about (?:us|the company)|who we are|our company|company overview|our mission|our culture|culture|"
+    r"our values|values|why (?:join|work (?:with|for)) us|what we offer|what you(?:['’]ll| will) get|"
+    r"benefits|our benefits|benefits and perks|perks|compensation|salary|diversity|inclusion|"
+    r"equal opportunity|equal employment opportunity|eeo|eeo statement|how to apply)\s*:?$",
+    re.IGNORECASE,
+)
 _YEARS = re.compile(r"(\d{1,2})\s*\+?\s*(?:-\s*\d{1,2}\s*)?(?:years?|yrs?)", re.IGNORECASE)
 _CITY_STATE = re.compile(r"\b([A-Z][a-zA-Z.'-]+(?:\s[A-Z][a-zA-Z.'-]+){0,3}),\s*([A-Z]{2})\b")
 _AUTH = re.compile(r"authori[sz]ed to work|work authori[sz]ation|sponsorship|u\.?s\.? citizen|citizenship|green card|permanent resident", re.IGNORECASE)
 _CLEARANCE = re.compile(r"\b(top secret(?:/sci)?|ts/sci|secret|public trust)\b[^.\n]*clearance|clearance[^.\n]*\b(top secret|ts/sci|secret|public trust)\b", re.IGNORECASE)
 _CREDENTIAL = re.compile(r"\b(licen[sc]e[ds]?|certification required|must (?:hold|have) (?:an? |the )?(?:active )?\w[\w\s]*certif\w*)\b", re.IGNORECASE)
 _BULLET = re.compile(r"^[•▪●◦\-*–—•]+\s*")
+_GENERIC_TITLE = re.compile(
+    r"^(?:job|position|role)?\s*(?:description|overview|summary)?$|^(?:careers?|about us|the opportunity|who we are)$",
+    re.IGNORECASE,
+)
+_PREFERENCE_CUE = re.compile(
+    r"\b(?:preferred|nice[- ]to[- ]have|bonus (?:point|qualification|skill)s?|optional qualifications?|a plus)\b",
+    re.IGNORECASE,
+)
+_DUTY_CUE = re.compile(r"\b(?:responsibilities|what you(?:'ll)? do|your impact|day[- ]to[- ]day|duties)\b", re.IGNORECASE)
+_STRONG_REQUIREMENT_CUE = re.compile(r"\b(?:must|required|minimum|qualification|you have|you bring)\b", re.IGNORECASE)
+_TECH_REQUIREMENT_CUE = re.compile(
+    r"\b(?:experience with|experienced in|proficien(?:t|cy) (?:with|in)|knowledge of|hands[- ]on|expertise in|"
+    r"familiar(?:ity)? with|using|worked? with)\b",
+    re.IGNORECASE,
+)
+_TOOL_INTRO_CUE = re.compile(
+    r"\b(?:experience with|experienced in|proficien(?:t|cy) (?:with|in)|knowledge of|expertise in|"
+    r"familiar(?:ity)? with|using|worked? with)\b",
+    re.IGNORECASE,
+)
+_UNCAPTURED_HARD_TOPIC = re.compile(
+    r"\b(?:bachelor(?:'s)?|master(?:'s)?|degree|education|travel|shift|weekend|on[- ]call|bilingual|"
+    r"language requirement|lift(?:ing)?|relocat(?:e|ion)|commut(?:e|ing)|driver(?:'s)? licen[sc]e)\b",
+    re.IGNORECASE,
+)
+_CONDITIONAL_REQUIREMENT = re.compile(
+    r"\b(?:either|one of|and/or|or equivalent|in lieu of|unless|except)\b",
+    re.IGNORECASE,
+)
+_COMMON_NONTECH_REQUIREMENT = re.compile(
+    r"\b(?:communication|written|verbal|leadership|teamwork|collaboration|collaborative|interpersonal|"
+    r"problem[- ]solving|analytical|critical thinking|attention to detail|organi[sz]ational|time management|"
+    r"self[- ]motivated|adaptability|mentoring|stakeholder management|fast learner|team player|work ethic|"
+    r"results oriented|customer focus|ownership|initiative|curiosity|integrity|creativity)\b",
+    re.IGNORECASE,
+)
+_RESPONSIBILITY_LINE = re.compile(
+    r"^(?:(?:you\s+(?:will|['’]ll)\s+)?(?:build|create|design|develop|implement|architect|deploy|operate|maintain|manage|lead|own|"
+    r"drive|deliver|analy[sz]e|support|collaborate|partner|write|test|monitor|optimi[sz]e|"
+    r"coordinate|establish|define|provide|ensure)|(?:responsible|accountable) for|"
+    r"(?:building|creating|designing|developing|implementing|architecting|deploying|operating|maintaining|managing|"
+    r"leading|owning|driving|delivering|analy[sz]ing|supporting|collaborating|partnering|writing|testing|monitoring|"
+    r"optimi[sz]ing|coordinating|establishing|defining|providing|ensuring))\b",
+    re.IGNORECASE,
+)
+_DOMAIN_REQUIREMENT = re.compile(
+    r"\b(?:(?:experience|background|knowledge|expertise|familiarity)\s+(?:working\s+)?(?:in|with|of)\s+(?:the\s+)?"
+    r"(?:health(?:care)?|medical|pharma(?:ceutical)?|biotech|fintech|financial services|banking|insurance|"
+    r"retail|e[- ]?commerce|government|public sector|defen[cs]e|telecommunications?|manufacturing|automotive|"
+    r"energy|utilities|education|edtech|travel|hospitality|real estate|logistics|supply chain)|"
+    r"(?:health(?:care)?|medical|pharma(?:ceutical)?|biotech|fintech|financial services|banking|insurance|"
+    r"retail|e[- ]?commerce|government|public sector|defen[cs]e|telecommunications?|manufacturing|automotive|"
+    r"energy|utilities|education|edtech|travel|hospitality|real estate|logistics|supply chain)\s+"
+    r"(?:industry\s+|domain\s+)?(?:experience|background|knowledge|expertise|familiarity)|"
+    r"(?:industry|domain|sector)\s+(?:experience|background|knowledge|expertise|familiarity)|"
+    r"\d{1,2}\s*\+?\s*(?:years?|yrs?)\s+(?:of\s+)?(?:experience\s+)?(?:in|with)\s+(?:the\s+)?"
+    r"(?:health(?:care)?|medical|pharma(?:ceutical)?|biotech|fintech|financial services|banking|insurance|"
+    r"retail|e[- ]?commerce|government|public sector|defen[cs]e|telecommunications?|manufacturing|automotive|"
+    r"energy|utilities|education|edtech|travel|hospitality|real estate|logistics|supply chain))\b",
+    re.IGNORECASE,
+)
+_SKILL_ITEM_SPLIT = re.compile(
+    r"\s*(?:,|;|\band/or\b|\band\b|\bor\b)\s*|\s+[|/]\s+",
+    re.IGNORECASE,
+)
+_HEADING_TOPIC = re.compile(
+    r"\b(?:overview|summary|requirements?|qualifications?|skills?|experience|responsibilities|duties|role|impact|"
+    r"benefits?|perks?|compensation|company|team|culture|values?|opportunity|profile|application|location|schedule|"
+    r"technology|stack)\b",
+    re.IGNORECASE,
+)
+_EMPLOYMENT_TYPES = ("full-time", "part-time", "contract", "temporary", "internship")
+_EMPLOYMENT_TYPE_DISPLAY = {
+    "full-time": "Full-time",
+    "part-time": "Part-time",
+    "contract": "Contract",
+    "temporary": "Temporary",
+    "internship": "Internship",
+}
+
+
+@dataclass(frozen=True)
+class HeuristicConfidence:
+    """Whether the fast local JD extraction is safe to use without an AI round trip."""
+
+    score: float
+    sufficient: bool
+    reasons: tuple[str, ...]
+
+
+def _looks_like_unrecognized_heading(line: str, index: int) -> bool:
+    """Identify section boundaries we cannot safely classify without guessing."""
+    if index < 2 or len(line) > 60 or _BULLET.match(line):
+        return False
+    core = line.rstrip(":").strip()
+    words = re.findall(r"[A-Za-z][A-Za-z'’&/-]*", core)
+    if not 1 <= len(words) <= 8 or re.search(r"[.!?]$", core):
+        return False
+    if line.rstrip().endswith(":"):
+        return True
+    if re.match(r"^(?:what|why|who|how|our|your|about)\b", core, re.IGNORECASE):
+        return True
+    significant = [word for word in words if word.lower() not in {"a", "an", "and", "for", "of", "the", "to"}]
+    title_case_topic = _HEADING_TOPIC.search(core) and all(word[0].isupper() or word.isupper() for word in significant)
+    return bool(significant) and bool(title_case_topic)
+
+
+def _jd_sections(raw_jd: str) -> tuple[list[str], dict[str, list[str]], frozenset[str]]:
+    """Split a line-oriented JD once so extraction and confidence use identical boundaries."""
+    lines = [line.strip() for line in raw_jd.split("\n")]
+    nonempty = [line for line in lines if line]
+    buckets: dict[str, list[str]] = {"required": [], "preferred": [], "duties": [], "general": []}
+    headings: set[str] = set()
+    current = "general"
+    for index, line in enumerate(nonempty):
+        if len(line) <= 60 and _REQUIRED_HEADINGS.match(line):
+            current = "required"
+            headings.add(current)
+            continue
+        if len(line) <= 60 and _PREFERRED_HEADINGS.match(line):
+            current = "preferred"
+            headings.add(current)
+            continue
+        if len(line) <= 60 and _DUTY_HEADINGS.match(line):
+            current = "duties"
+            headings.add(current)
+            continue
+        if len(line) <= 60 and _OTHER_HEADING.match(line):
+            current = "other"
+            headings.add(current)
+            buckets.setdefault(current, [])
+            continue
+        if _looks_like_unrecognized_heading(line, index):
+            # Do not let benefits or another unknown section bleed into the
+            # preceding requirement bucket. Confidence will route this JD to AI.
+            current = "other"
+            headings.add("unknown")
+            buckets.setdefault(current, [])
+            continue
+        buckets.setdefault(current, []).append(_BULLET.sub("", line))
+    return nonempty, buckets, frozenset(headings)
 
 
 _COMPANY_LABEL = re.compile(r"^(?:company|employer|organi[sz]ation|client)\s*:\s*(.{2,80})$", re.IGNORECASE)
@@ -207,26 +325,15 @@ def _seniority_from_title(title: str | None) -> str:
     return "mid" if t else "unknown"
 
 
-def heuristic_requirements(raw_jd: str, vocabulary: set[str], title: str | None = None, company: str | None = None) -> JobRequirements:
-    lines = [line.strip() for line in raw_jd.split("\n")]
-    nonempty = [line for line in lines if line]
-    buckets: dict[str, list[str]] = {"required": [], "preferred": [], "duties": [], "general": []}
-    current = "general"
-    for line in nonempty:
-        if len(line) <= 60 and _REQUIRED_HEADINGS.match(line):
-            current = "required"
-            continue
-        if len(line) <= 60 and _PREFERRED_HEADINGS.match(line):
-            current = "preferred"
-            continue
-        if len(line) <= 60 and _DUTY_HEADINGS.match(line):
-            current = "duties"
-            continue
-        if len(line) <= 60 and _OTHER_HEADING.match(line):
-            current = "other"
-            buckets.setdefault("other", [])
-            continue
-        buckets.setdefault(current, []).append(_BULLET.sub("", line))
+def heuristic_requirements(
+    raw_jd: str,
+    vocabulary: set[str],
+    title: str | None = None,
+    company: str | None = None,
+    location: str | None = None,
+    employment_type: str | None = None,
+) -> JobRequirements:
+    nonempty, buckets, _headings = _jd_sections(raw_jd)
 
     def skills_in(text: str) -> list[str]:
         return sorted(detect_known_skills(text, vocabulary))
@@ -264,14 +371,249 @@ def heuristic_requirements(raw_jd: str, vocabulary: set[str], title: str | None 
         preferred_skills=[display_name(s) for s in preferred],
         duties=[d[:200] for d in buckets["duties"][:15]],
         industry=None,
-        location=location_match.group(0) if location_match else None,
+        location=location or (location_match.group(0) if location_match else None),
         work_arrangement=arrangement,  # type: ignore[arg-type]
         work_authorization="; ".join(auth_lines)[:300] or None,
         security_clearance=clearance.group(0)[:120] if clearance else None,
         required_credentials=[c[:200] for c in credentials[:10]],
-        employment_type=next((t for t in ("Full-time", "Part-time", "Contract", "Temporary", "Internship") if t.lower() in lowered), None),
+        employment_type=employment_type or next((_EMPLOYMENT_TYPE_DISPLAY[t] for t in _EMPLOYMENT_TYPES if t in lowered), None),
         other_hard_requirements=[],
     )
+
+
+def heuristic_confidence(
+    raw_jd: str,
+    requirements: JobRequirements,
+    vocabulary: set[str],
+    *,
+    supplied_title: str | None = None,
+    hard_requirements_matter: bool = False,
+) -> HeuristicConfidence:
+    """Score the local extraction and identify cases whose meaning needs AI.
+
+    The fast path is intentionally conservative. A false low-confidence result
+    only costs one AI request; a false high-confidence result could rank the
+    wrong candidate. Prompt-injection text is not a blocker because keeping it
+    in deterministic parsing is safer than sending it to the model.
+    """
+    nonempty, buckets, headings = _jd_sections(raw_jd)
+    words = re.findall(r"\b\w+\b", raw_jd)
+    title = (supplied_title or requirements.title or "").strip()
+    credible_title = bool(title and len(title) <= 120 and len(title.split()) <= 20 and not _GENERIC_TITLE.fullmatch(title))
+    skill_count = len(requirements.mandatory_skills) + len(requirements.preferred_skills)
+    reasons: list[str] = []
+
+    def line_covered(line: str) -> bool:
+        lowered = line.lower()
+        return bool(
+            detect_known_skills(line, vocabulary)
+            or _YEARS.search(line)
+            or _AUTH.search(line)
+            or _CLEARANCE.search(line)
+            or _CREDENTIAL.search(line)
+            or _COMMON_NONTECH_REQUIREMENT.search(line)
+            or (not hard_requirements_matter and _UNCAPTURED_HARD_TOPIC.search(line))
+            or any(term in lowered for term in (*_EMPLOYMENT_TYPES, "remote", "hybrid", "on-site", "onsite", "in-office"))
+        )
+
+    def coverage(lines: list[str]) -> float:
+        meaningful = [line for line in lines if re.search(r"[A-Za-z0-9]", line)]
+        return (sum(line_covered(line) for line in meaningful) / len(meaningful)) if meaningful else 1.0
+
+    def mixed_technology_list_is_uncovered(line: str) -> bool:
+        """Catch lists where one known skill used to hide unknown adjacent tools."""
+        match = _TECH_REQUIREMENT_CUE.search(line)
+        tail = line[match.end() :] if match else line
+        parts = [part.strip(" .:()") for part in _SKILL_ITEM_SPLIT.split(tail)]
+        meaningful = [part for part in parts if re.search(r"[A-Za-z]", part)]
+        if len(meaningful) <= 1 or (not match and len(line.split()) > 14):
+            return False
+        detected = [bool(detect_known_skills(part, vocabulary)) for part in meaningful]
+        return any(detected) and not all(detected)
+
+    def technology_cue_tail_is_uncovered(line: str) -> bool:
+        """A known skill before a later cue must not hide an unknown tool after it."""
+        matches = list(_TOOL_INTRO_CUE.finditer(line))
+        if not matches or not detect_known_skills(line, vocabulary):
+            return False
+        last = matches[-1]
+        tail = line[last.end() :].strip(" .:()")
+        if not detect_known_skills(line[: last.start()], vocabulary) or detect_known_skills(tail, vocabulary):
+            return False
+        tail_tokens = re.findall(r"[A-Za-z][A-Za-z0-9+#.'’/-]*", tail)
+        return len(tail_tokens) == 1 or product_like_signal(tail)
+
+    def short_unknown_requirement(line: str) -> bool:
+        if line_covered(line) or len(line.split()) > 4:
+            return False
+        if _COMMON_NONTECH_REQUIREMENT.search(line) or _UNCAPTURED_HARD_TOPIC.search(line):
+            return False
+        return bool(re.search(r"[A-Za-z0-9]", line))
+
+    def product_like_signal(line: str) -> bool:
+        tokens = re.findall(r"[A-Za-z][A-Za-z0-9+#.'’/-]*", line)
+        significant = [
+            token
+            for token in tokens
+            if token.lower() not in {"a", "an", "and", "for", "in", "of", "or", "the", "to", "with"}
+        ]
+        if not significant:
+            return False
+        if any(re.search(r"[A-Z].*[A-Z]|[a-z][A-Z]|\d|[+#./]", token) for token in significant):
+            return True
+        if all(token[0].isupper() for token in significant):
+            return True
+        generic_suffixes = {"api", "database", "framework", "library", "orchestration", "platform", "sdk", "service", "tool"}
+        return significant[0][0].isupper() and any(token.lower() in generic_suffixes for token in significant[1:])
+
+    def unknown_tool_cue_without_known_skill(line: str) -> bool:
+        """Route a genuinely tool-like unknown cue to AI, not generic prose."""
+        if detect_known_skills(line, vocabulary) or _COMMON_NONTECH_REQUIREMENT.search(line):
+            return False
+        matches = list(_TOOL_INTRO_CUE.finditer(line))
+        if not matches:
+            return False
+        tail = line[matches[-1].end() :].strip(" .:()")
+        tokens = re.findall(r"[A-Za-z][A-Za-z0-9+#.'’/-]*", tail)
+        parts = [part for part in _SKILL_ITEM_SPLIT.split(tail) if re.search(r"[A-Za-z0-9]", part)]
+        return bool(tokens) and (len(tokens) == 1 or product_like_signal(tail) or len(parts) > 1)
+
+    required_lines = buckets["required"]
+    preferred_lines = buckets["preferred"]
+    if not required_lines:
+        required_lines = [
+            line
+            for line in [*buckets["general"], *buckets["duties"]]
+            if _STRONG_REQUIREMENT_CUE.search(line) or _TECH_REQUIREMENT_CUE.search(line)
+        ]
+    required_coverage = coverage(required_lines)
+    preferred_coverage = coverage(preferred_lines)
+    responsibility_lines = [
+        line
+        for line in buckets["general"]
+        if _RESPONSIBILITY_LINE.search(line)
+    ]
+    domain_requirement_lines = [
+        *buckets["required"],
+        *buckets["preferred"],
+        *[
+            line
+            for line in buckets["general"]
+            if _STRONG_REQUIREMENT_CUE.search(line) or _PREFERENCE_CUE.search(line) or _YEARS.search(line)
+        ],
+    ]
+
+    score = 0.0
+    if credible_title:
+        score += 0.18
+    if "required" in headings:
+        score += 0.22
+    elif len(requirements.mandatory_skills) >= 4:
+        score += 0.16
+    elif len(requirements.mandatory_skills) >= 2:
+        score += 0.10
+
+    duty_cue_present = bool(_DUTY_CUE.search("\n".join(buckets["general"])))
+    if len(requirements.duties) >= 2 or (not duty_cue_present and not responsibility_lines and "duties" not in headings):
+        score += 0.12
+    elif credible_title and len(requirements.mandatory_skills) >= 4:
+        score += 0.06
+
+    if required_lines:
+        score += 0.28 * required_coverage
+    elif len(requirements.mandatory_skills) >= 3:
+        score += 0.28
+    elif requirements.mandatory_skills:
+        score += 0.14
+
+    classified_text = "\n".join(
+        [*buckets["general"], *buckets["required"], *buckets["preferred"], *buckets["duties"]]
+    )
+    preference_cue_present = bool(_PREFERENCE_CUE.search(classified_text))
+    if preferred_lines:
+        score += 0.10 * preferred_coverage
+    elif not preference_cue_present:
+        score += 0.10
+
+    if requirements.mandatory_skills and (credible_title or requirements.duties):
+        score += 0.10
+
+    if not credible_title:
+        reasons.append("job title was not clear")
+    if len(words) < 25:
+        reasons.append("job description was too short")
+    if len(nonempty) < 4 and len(words) > 80:
+        reasons.append("job description had no reliable section structure")
+    if skill_count == 0:
+        reasons.append("no known job skills were found")
+    elif skill_count > 30:
+        reasons.append("too many skills were detected to classify reliably")
+    if "required" in headings and not requirements.mandatory_skills:
+        reasons.append("the required section had no recognized skills")
+    elif "required" in headings and required_coverage < 0.40:
+        reasons.append("most required qualifications were outside the local vocabulary")
+    if "preferred" in headings and not requirements.preferred_skills:
+        reasons.append("the preferred section could not be classified")
+    elif "preferred" in headings and preferred_coverage < 0.60:
+        reasons.append("most preferred qualifications could not be classified locally")
+    if duty_cue_present and "duties" not in headings and not requirements.duties:
+        reasons.append("responsibilities were not in a recognized section")
+    if preference_cue_present and "preferred" not in headings and not requirements.preferred_skills:
+        reasons.append("preferred requirements were not in a recognized section")
+    if "unknown" in headings:
+        reasons.append("an unrecognized section heading could change requirement classification")
+    if responsibility_lines and not requirements.duties:
+        reasons.append("responsibilities were not classified locally")
+    if requirements.industry is None and any(_DOMAIN_REQUIREMENT.search(line) for line in domain_requirement_lines):
+        reasons.append("an industry or domain requirement was not classified locally")
+
+    requirement_lines = [*buckets["required"], *buckets["preferred"]]
+    if not requirement_lines:
+        requirement_lines = [
+            line for line in [*buckets["general"], *buckets["duties"]] if _STRONG_REQUIREMENT_CUE.search(line)
+        ]
+    for line in requirement_lines:
+        if unknown_tool_cue_without_known_skill(line):
+            reasons.append("a required technology was outside the local vocabulary")
+            break
+        if mixed_technology_list_is_uncovered(line):
+            reasons.append("a technology list contained tools outside the local vocabulary")
+            break
+        if technology_cue_tail_is_uncovered(line):
+            reasons.append("a required technology after a technology cue was outside the local vocabulary")
+            break
+    short_unknown = [line for line in buckets["required"] if short_unknown_requirement(line)]
+    known_short = [line for line in buckets["required"] if len(line.split()) <= 4 and line_covered(line)]
+    if any(product_like_signal(line) for line in short_unknown) or (
+        known_short and any(len(re.findall(r"[A-Za-z0-9+#.'’/-]+", line)) == 1 for line in short_unknown)
+    ):
+        reasons.append("a short required qualification was outside the local vocabulary")
+    if hard_requirements_matter and any(_UNCAPTURED_HARD_TOPIC.search(line) for line in requirement_lines):
+        reasons.append("an unusual hard requirement needed interpretation")
+    if any(_CONDITIONAL_REQUIREMENT.search(line) for line in requirement_lines):
+        reasons.append("requirements contained alternatives or exceptions")
+    if any(_PREFERENCE_CUE.search(line) for line in buckets["required"]) or any(
+        _STRONG_REQUIREMENT_CUE.search(line) for line in buckets["preferred"]
+    ):
+        reasons.append("required and preferred sections overlapped")
+
+    lowered = raw_jd.lower()
+    arrangements = {
+        name
+        for name, found in (
+            ("remote", bool(re.search(r"\bremote\b", lowered))),
+            ("hybrid", "hybrid" in lowered),
+            ("onsite", bool(re.search(r"\bon[- ]?site\b|\bin[- ]office\b|\bin the office\b", lowered))),
+        )
+        if found
+    }
+    if hard_requirements_matter and len(arrangements) > 1:
+        reasons.append("multiple work arrangements were mentioned")
+    if hard_requirements_matter and requirements.work_arrangement in {"hybrid", "onsite"} and not requirements.location:
+        reasons.append("the required work location was unclear")
+
+    final_score = round(min(1.0, score), 3)
+    return HeuristicConfidence(score=final_score, sufficient=final_score >= 0.80 and not reasons, reasons=tuple(dict.fromkeys(reasons)))
 
 
 JD_INSTRUCTIONS = f"""You extract structured hiring requirements from one job description.
@@ -321,13 +663,35 @@ def _stated(value: str | None) -> str | None:
     return None if value is None or _NOT_STATED.match(value) else value.strip() or None
 
 
+_ANALYSIS_WARNING_CODES = {"ai_analysis_failed", "low_confidence_local_analysis"}
+
+
+def _analysis_warning(job: Job, code: str, message: str) -> None:
+    existing = [warning for warning in (job.warnings_json or []) if warning.get("code") not in _ANALYSIS_WARNING_CODES]
+    job.warnings_json = [*existing, {"code": code, "message": message}]
+
+
 def analyze_job(db: Session, ai: AIService | None, job: Job, *, use_cache: bool = True) -> Job:
     job.status = PipelineStatus.ANALYZING
     db.commit()
     try:
+        job.warnings_json = [
+            warning for warning in (job.warnings_json or []) if warning.get("code") not in _ANALYSIS_WARNING_CODES
+        ]
+        # A manual correction or a prior AI extraction is safe to reuse. A
+        # heuristic result is intentionally cheap to recompute because the
+        # candidate-derived skill vocabulary may have changed since it ran.
         cached = (
             db.scalar(
-                select(Job).where(Job.jd_hash == job.jd_hash, Job.id != job.id, Job.parsed_requirements_json.is_not(None)).limit(1)
+                select(Job)
+                .where(
+                    Job.jd_hash == job.jd_hash,
+                    Job.id != job.id,
+                    Job.parsed_requirements_json.is_not(None),
+                    Job.requirements_source.in_(("manual", "ai")),
+                )
+                .order_by(Job.requirements_source.desc(), Job.updated_at.desc())
+                .limit(1)
             )
             if use_cache
             else None
@@ -335,24 +699,64 @@ def analyze_job(db: Session, ai: AIService | None, job: Job, *, use_cache: bool 
         if cached is not None:
             requirements = JobRequirements.model_validate(cached.parsed_requirements_json)
             source = "cache"
-        elif ai is not None and ai.available():
-            try:
-                requirements = ai.run(
-                    operation=GenerationOperation.JD_ANALYSIS,
-                    role="analysis",
-                    instructions=JD_INSTRUCTIONS,
-                    input_text=wrap("job_description", job.raw_jd[:40_000]),
-                    schema=JobRequirements,
-                    job_id=job.id,
-                )
-                source = "ai"
-            except AIError as exc:
-                requirements = heuristic_requirements(job.raw_jd, _vocabulary(db), job.title, job.company)
-                source = "heuristic"
-                job.warnings_json = [*(job.warnings_json or []), {"code": "ai_analysis_failed", "message": f"AI analysis failed, used offline rules: {exc}"}]
         else:
-            requirements = heuristic_requirements(job.raw_jd, _vocabulary(db), job.title, job.company)
-            source = "heuristic"
+            settings = load_settings(db)
+            vocabulary = _vocabulary(db)
+            local = _clean_requirements(
+                heuristic_requirements(
+                    job.raw_jd,
+                    vocabulary,
+                    job.title,
+                    job.company,
+                    job.location,
+                    job.employment_type,
+                )
+            )
+            confidence = heuristic_confidence(
+                job.raw_jd,
+                local,
+                vocabulary,
+                supplied_title=job.title,
+                hard_requirements_matter=settings.hard_requirement_gates,
+            )
+            logger.info(
+                "Local JD analysis for job %s: confidence=%.3f sufficient=%s reasons=%s",
+                job.id,
+                confidence.score,
+                confidence.sufficient,
+                "; ".join(confidence.reasons) or "none",
+            )
+            if confidence.sufficient:
+                requirements = local
+                source = "heuristic"
+            elif ai is not None and ai.available():
+                try:
+                    requirements = ai.run(
+                        operation=GenerationOperation.JD_ANALYSIS,
+                        role="analysis",
+                        instructions=JD_INSTRUCTIONS,
+                        input_text=wrap("job_description", job.raw_jd[:40_000]),
+                        schema=JobRequirements,
+                        job_id=job.id,
+                    )
+                    source = "ai"
+                except AIError as exc:
+                    requirements = local
+                    source = "heuristic"
+                    _analysis_warning(
+                        job,
+                        "ai_analysis_failed",
+                        f"AI fallback failed; generation continued with fast local JD extraction: {exc}",
+                    )
+            else:
+                requirements = local
+                source = "heuristic"
+                reason = "; ".join(confidence.reasons[:3]) or "the JD structure was ambiguous"
+                _analysis_warning(
+                    job,
+                    "low_confidence_local_analysis",
+                    f"Generation continued with fast local JD extraction, but OpenAI was unavailable for an ambiguous JD ({reason}).",
+                )
         requirements = _clean_requirements(requirements)
         job.parsed_requirements_json = requirements.model_dump(mode="json")
         job.requirements_source = source

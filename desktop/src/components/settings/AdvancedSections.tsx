@@ -123,15 +123,6 @@ export function DocumentsSection({ settings }: { settings: AppSettings }) {
     <Section title="Documents" description="Layout is fixed by templates; AI never controls formatting.">
       <div className="flex items-start justify-between gap-6">
         <div>
-          <Label htmlFor="skip-known-urls">Skip job URLs already in history</Label>
-          <p className="mt-1 text-xs text-muted-foreground">
-            A job whose posting URL you added before is skipped instead of being saved and generated again. If the earlier copy was only saved for later, Save &amp; generate generates that one.
-          </p>
-        </div>
-        <Switch id="skip-known-urls" checked={settings.skip_known_urls} onCheckedChange={(value) => void save({ skip_known_urls: value })} />
-      </div>
-      <div className="flex items-start justify-between gap-6">
-        <div>
           <Label htmlFor="require-verification">Require verification of candidate details</Label>
           <p className="mt-1 text-xs text-muted-foreground">
             {settings.require_verification

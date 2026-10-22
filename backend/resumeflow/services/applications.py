@@ -99,17 +99,6 @@ def _content(doc: Document | None, doc_type: DocumentType):
 # ---------------------------------------------------------------- create & generate
 
 
-def earlier_application_for_url(db: Session, job: Job) -> Application | None:
-    """An application already made for the same posting URL under another job entry (failed generations don't count)."""
-    return db.scalar(
-        select(Application)
-        .join(Job, Job.id == Application.job_id)
-        .where(Job.normalized_url == job.normalized_url, Job.id != job.id, Application.status != PipelineStatus.FAILED)
-        .order_by(Application.created_at)
-        .limit(1)
-    )
-
-
 def create_application(
     db: Session,
     queue: ProcessingQueue,
@@ -122,15 +111,6 @@ def create_application(
 ) -> Application:
     job = get_job(db, job_id)
     candidate = get_candidate(db, candidate_id)
-    if load_settings(db).skip_known_urls and (earlier := earlier_application_for_url(db, job)) is not None:
-        who = db.get(Candidate, earlier.candidate_id)
-        raise AppError(
-            409,
-            "url_already_generated",
-            f"Skipped: this job posting was already generated on {earlier.application_date:%b %d, %Y}"
-            f" for {who.full_name if who else 'a candidate'}.",
-            {"application_id": earlier.id, "job_id": earlier.job_id},
-        )
     ready = candidate_readiness(db, candidate)
     if candidate.consent_confirmed_at is None:
         raise AppError(409, "candidate_not_authorized", "Confirm the candidate's authorization before creating an application.")
@@ -632,15 +612,20 @@ def job_folders(job: Job, max_length: int = 120) -> tuple[str, str]:
 
 
 def _output_layout(db: Session, app: Application) -> tuple[Path, str]:
-    """``<root>/YYYY-MM-DD/Candidate_Name/<site>/<Position>_-_<url>/`` and the ``NNN_Company`` file prefix."""
+    """Choose the URL-based layout, or ``instant resumes/MM-DD-YYYY/title`` when no URL was supplied."""
     settings = load_settings(db)
     candidate = db.get(Candidate, app.candidate_id)
     job = db.get(Job, app.job_id)
     prefix = f"{app.sequence_number:03d}_{sanitize_component(job.company or job.title or 'Job', max_length=40)}"
+    longest_file = len(prefix) + 1 + max(len(name) for name in _FILE_NAMES.values()) + len("_v99")
+    if not job.normalized_url:
+        parent = Path(settings.output_root) / "instant resumes" / app.application_date.strftime("%m-%d-%Y")
+        available = max(12, min(80, MAX_PATH_LENGTH - len(str(parent)) - 2 - longest_file))
+        title = sanitize_component(job.title, max_length=available, fallback="Untitled_job")
+        return parent / title, prefix
     site, _ = job_folders(job)
     base = Path(settings.output_root) / app.application_date.isoformat() / sanitize_component(candidate.full_name) / site
     # Size the job folder so the longest file name (plus a "_v99" suffix) stays within the Windows path limit.
-    longest_file = len(prefix) + 1 + max(len(name) for name in _FILE_NAMES.values()) + len("_v99")
     _, job_folder = job_folders(job, max_length=max(28, MAX_PATH_LENGTH - len(str(base)) - 2 - longest_file))
     return base / job_folder, prefix
 
@@ -719,7 +704,7 @@ def build_metadata(db: Session, app: Application) -> dict[str, Any]:
         "candidate_name": candidate.full_name,
         "company": job.company,
         "job_title": job.title,
-        "source_url": job.job_url,
+        "source_url": job.job_url or None,
         "application_date": app.application_date.isoformat(),
         "sequence_number": app.sequence_number,
         "generation_date": (resume.created_at.isoformat() if resume else None),
@@ -895,7 +880,8 @@ def handle_export(ctx: JobContext) -> None:
     if keep_word:
         _save_word_files(ctx, app_id, folder, prefix, documents)
     _ensure_file(ctx, app_id, DocumentType.JOB_DESCRIPTION, DocumentFormat.TXT, 1, folder, prefix, lambda: raw_jd.encode("utf-8"))
-    _ensure_file(ctx, app_id, DocumentType.JOB_URL, DocumentFormat.TXT, 1, folder, prefix, lambda: (url + "\n").encode("utf-8"))
+    if url:
+        _ensure_file(ctx, app_id, DocumentType.JOB_URL, DocumentFormat.TXT, 1, folder, prefix, lambda: (url + "\n").encode("utf-8"))
     ctx.progress(30)
 
     pdf_status, pdf_error = _convert_pdfs(ctx, app_id, folder, prefix, documents)

@@ -133,12 +133,10 @@ describe("settings", () => {
     await waitFor(() => expect(calls.some((c) => c.method === "PATCH" && (c.body as { require_verification?: boolean }).require_verification === true)).toBe(true));
   });
 
-  it("turns off skipping job URLs already in history", async () => {
-    const { calls } = mockBackend();
+  it("does not offer a setting that skips duplicate job URLs", async () => {
+    mockBackend();
     renderApp("/settings");
-    const toggle = await screen.findByRole("switch", { name: "Skip job URLs already in history" });
-    expect(toggle).toBeChecked();
-    await userEvent.click(toggle);
-    await waitFor(() => expect(calls.some((c) => c.method === "PATCH" && (c.body as { skip_known_urls?: boolean }).skip_known_urls === false)).toBe(true));
+    expect(await screen.findByRole("heading", { name: "Settings" })).toBeInTheDocument();
+    expect(screen.queryByRole("switch", { name: "Skip job URLs already in history" })).not.toBeInTheDocument();
   });
 });

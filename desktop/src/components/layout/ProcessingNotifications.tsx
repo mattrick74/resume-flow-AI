@@ -47,9 +47,20 @@ function title(event: ProcessingStageEvent) {
 }
 
 function notify(event: ProcessingStageEvent) {
+  const source = detail(event, "source");
+  const sourceLabel =
+    event.stage === "jd_analysis"
+      ? source === "heuristic"
+        ? "fast local"
+        : source === "ai"
+          ? "AI fallback"
+          : source === "cache"
+            ? "cached"
+            : null
+      : null;
   const options = {
     id: `processing-event-${event.id}`,
-    description: `${subject(event)} · ${formatDuration(event.duration_ms)}`,
+    description: `${subject(event)} · ${formatDuration(event.duration_ms)}${sourceLabel ? ` · ${sourceLabel}` : ""}`,
   };
   if (event.status === "failed") toast.error(title(event), options);
   else if (event.status === "skipped") toast.info(title(event), options);

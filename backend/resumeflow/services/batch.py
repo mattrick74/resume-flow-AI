@@ -20,7 +20,7 @@ from resumeflow.db.models import Application, Candidate, CandidateMatch, Job, Pr
 from resumeflow.domain.enums import PipelineStatus, ProcessingJobType, ProcessingStatus
 from resumeflow.errors import AppError
 from resumeflow.services.ai.service import AIService
-from resumeflow.services.applications import create_application, earlier_application_for_url
+from resumeflow.services.applications import create_application
 from resumeflow.services.experience import needs_confirmation, pause_for_confirmation, resolve_confirmation
 from resumeflow.services.jobs import analyze_job, create_job, get_job, job_summary
 from resumeflow.services.matching import run_matching
@@ -45,7 +45,7 @@ def save_jobs(db: Session, items: list[dict[str, Any]], *, confirm_duplicates: b
             results.append(
                 {
                     "index": index,
-                    "status": {"duplicate_job": "duplicate", "url_in_history": "skipped"}.get(exc.code, "invalid"),
+                    "status": "invalid",
                     "code": exc.code,
                     "message": exc.message,
                     "details": exc.details,
@@ -87,22 +87,12 @@ def save_and_queue(db: Session, queue: ProcessingQueue, items: list[dict[str, An
     created = [r["job"]["id"] for r in results if r["status"] == "created"]
     if not process:
         return {"results": results, "queued": [], "skipped": []}
-    # A posting skipped because it was saved earlier but never generated is generated now, from that saved copy.
-    earlier = {r["index"]: r["details"]["matches"][0]["job_id"] for r in results if r["status"] == "skipped" and r["details"].get("matches")}
-    waiting = set(db.scalars(select(Job.id).where(Job.id.in_(list(earlier.values())), waiting_clause()))) - set(created) if earlier else set()
-    queued = queue_jobs(db, queue, [*created, *(job_id for job_id in earlier.values() if job_id in waiting)])
-    for result in results:
-        job_id = earlier.get(result["index"])
-        if job_id in waiting and job_id in queued["queued"]:
-            result["queued_job_id"] = job_id
-            result["message"] = "Already saved earlier but never generated, so that saved job is being generated now."
-    return {"results": results, **queued}
+    return {"results": results, **queue_jobs(db, queue, created)}
 
 
 def queue_jobs(db: Session, queue: ProcessingQueue, job_ids: list[str]) -> dict[str, Any]:
     queued: list[str] = []
     skipped: list[dict[str, str]] = []
-    skip_known = load_settings(db).skip_known_urls
     for job_id in dict.fromkeys(job_ids):  # de-duplicate, keep order
         job = db.get(Job, job_id)
         if job is None:
@@ -111,8 +101,6 @@ def queue_jobs(db: Session, queue: ProcessingQueue, job_ids: list[str]) -> dict[
             skipped.append({"job_id": job_id, "reason": "Already queued"})
         elif open_application(db, job.id):
             skipped.append({"job_id": job_id, "reason": "Already has an application"})
-        elif skip_known and earlier_application_for_url(db, job) is not None:
-            skipped.append({"job_id": job_id, "reason": "Already generated for this job URL"})
         elif job.status == PipelineStatus.ANALYZING:
             skipped.append({"job_id": job_id, "reason": "Being analyzed right now"})
         else:
@@ -162,15 +150,7 @@ def handle_process_job(ai: AIService) -> Callable[[JobContext], None]:
                     return
             resolve_confirmation(job)
             db.commit()
-            try:
-                create_application(db, ctx.queue, job_id=job.id, candidate_id=top.candidate_id, override_reason=None, generate=True)
-            except AppError as exc:
-                if exc.code == "url_already_generated":
-                    # The same posting was generated before under another job entry: skip, and say so on the job.
-                    job.warnings_json = [*(w for w in (job.warnings_json or []) if w.get("code") != exc.code), {"code": exc.code, "message": exc.message}]
-                    db.commit()
-                elif exc.code != "duplicate_application":
-                    raise
+            create_application(db, ctx.queue, job_id=job.id, candidate_id=top.candidate_id, override_reason=None, generate=True)
 
     return run
 

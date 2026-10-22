@@ -25,7 +25,7 @@ import { queryKeys, useJob, useJobMutation, useProcessJobs } from "@/lib/queries
 import type { CandidateMatch, JobDetail, JobRequirements } from "@/lib/types";
 import { cn } from "@/lib/utils";
 
-const SOURCE_LABEL = { ai: "AI extraction", heuristic: "Offline rules", manual: "Edited by you", cache: "Reused from identical JD" } as const;
+const SOURCE_LABEL = { ai: "AI fallback extraction", heuristic: "Fast local extraction", manual: "Edited by you", cache: "Reused from identical JD" } as const;
 
 export function JobPage() {
   const { id = "" } = useParams();
@@ -104,14 +104,16 @@ function JobView({ job }: { job: JobDetail }) {
           </div>
           <p className="mt-1 flex flex-wrap items-center gap-x-2 text-sm text-muted-foreground">
             {[job.company, job.location, job.employment_type, job.rate].filter(Boolean).join(" · ")}
-            <button
-              type="button"
-              className="inline-flex max-w-md items-center gap-1 truncate text-primary hover:underline"
-              onClick={() => api.system.openUrl(job.job_url).catch((e) => toast.error("Couldn't open link", { description: describeError(e) }))}
-              title="Open the posting in your browser"
-            >
-              {job.normalized_url} <ExternalLink className="size-3.5 shrink-0" />
-            </button>
+            {job.job_url && (
+              <button
+                type="button"
+                className="inline-flex max-w-md items-center gap-1 truncate text-primary hover:underline"
+                onClick={() => api.system.openUrl(job.job_url).catch((e) => toast.error("Couldn't open link", { description: describeError(e) }))}
+                title="Open the posting in your browser"
+              >
+                {job.normalized_url || job.job_url} <ExternalLink className="size-3.5 shrink-0" />
+              </button>
+            )}
           </p>
         </div>
         <Button variant="ghost" size="sm" onClick={() => setEditing(true)}>
@@ -125,7 +127,7 @@ function JobView({ job }: { job: JobDetail }) {
 
       {inQueue ? (
         <Alert className="mb-3" title={job.processing?.status === "queued" ? "Queued for tailored documents" : "Working on this job in the background"}>
-          Requirements are extracted, candidates ranked, and the top eligible candidate gets a tailored resume and cover letter for your review.
+          Requirements are extracted, candidates ranked, and the top eligible candidate gets tailored documents that are saved automatically.
           {job.processing?.status === "running" && <Progress value={job.processing.progress} className="mt-2 max-w-xs" aria-label="Processing progress" />}
         </Alert>
       ) : (
