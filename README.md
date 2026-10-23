@@ -43,6 +43,8 @@ for the architecture, API, test strategy and remaining risks.
    of holding the application: a flagged cover-letter sentence (e.g. a claim the profile doesn't support, or a number that isn't
    in it) is removed, a flagged resume bullet goes back to the profile's own wording, and if too much is wrong the profile-based
    document is used. Each fix is listed under *Checks* as a note. Choose *Wait for my approval* to review every application.
+   The installed desktop app shows one Windows notification after the entire processing queue is empty—after every selected
+   job, document generation, export and PDF conversion has finished—not after each individual resume.
    Add **Instructions for the AI** next to Generate/Regenerate (and a default in Settings) for wording, emphasis and order; facts the
    evidence doesn't support are still removed.
    **Job skills found in the candidate's experience (automatic).** Before writing, every skill the job asks for that the resume

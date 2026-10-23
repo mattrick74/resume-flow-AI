@@ -23,6 +23,7 @@ fn restart_backend(sidecar: State<'_, Sidecar>) -> Result<BackendConnection, Str
 
 pub fn run() {
     let app = tauri::Builder::default()
+        .plugin(tauri_plugin_notification::init())
         .setup(|app| {
             let sidecar = Sidecar::start(app.handle())?;
             app.manage(sidecar);

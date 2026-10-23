@@ -574,6 +574,7 @@ export type ProcessingStage =
   | "cover_letter_render"
   | "pdf_conversion"
   | "document_export"
+  | "queue_idle"
   | (string & {});
 
 export interface ProcessingStageEvent {
@@ -592,6 +593,7 @@ export interface ProcessingStageEvent {
 export interface ProcessingStageEventsResponse {
   events: ProcessingStageEvent[];
   next_after_id: number;
+  queue_depth: number;
 }
 
 export interface ApplicationSummary {

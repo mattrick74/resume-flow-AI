@@ -10,6 +10,7 @@ from resumeflow.db.models import Application, ProcessingJob, ProcessingStageEven
 from resumeflow.domain.enums import PipelineStatus, ProcessingJobType, ProcessingStatus
 
 router = APIRouter(prefix="/processing-jobs", tags=["processing"])
+ACTIVE_STATUSES = (ProcessingStatus.QUEUED, ProcessingStatus.RUNNING)
 
 
 def _view(job: ProcessingJob) -> dict[str, Any]:
@@ -56,6 +57,17 @@ def _event_view(event: ProcessingStageEvent) -> dict[str, Any]:
     }
 
 
+def _queue_depth(db: DbSession) -> int:
+    return (
+        db.scalar(
+            select(func.count())
+            .select_from(ProcessingJob)
+            .where(ProcessingJob.status.in_(ACTIVE_STATUSES))
+        )
+        or 0
+    )
+
+
 @router.get("/events")
 def list_processing_events(db: DbSession, after_id: int | None = None, limit: int = 200) -> dict[str, Any]:
     """Cursor-polled stage completions.
@@ -65,7 +77,7 @@ def list_processing_events(db: DbSession, after_id: int | None = None, limit: in
     """
     if after_id is None:
         latest = db.scalar(select(func.max(ProcessingStageEvent.id))) or 0
-        return {"events": [], "next_after_id": latest}
+        return {"events": [], "next_after_id": latest, "queue_depth": _queue_depth(db)}
     cursor = max(0, after_id)
     rows = list(
         db.scalars(
@@ -78,6 +90,7 @@ def list_processing_events(db: DbSession, after_id: int | None = None, limit: in
     return {
         "events": [_event_view(event) for event in rows],
         "next_after_id": rows[-1].id if rows else cursor,
+        "queue_depth": _queue_depth(db),
     }
 
 

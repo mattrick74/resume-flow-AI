@@ -1,8 +1,9 @@
-import { useQuery } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useRef } from "react";
 import { toast } from "sonner";
 
 import { api } from "@/lib/api";
+import { sendQueueIdleNotification } from "@/lib/nativeNotifications";
 import { queryKeys } from "@/lib/queries";
 import type { ProcessingStageEvent } from "@/lib/types";
 import { formatDuration } from "@/lib/utils";
@@ -74,6 +75,8 @@ function notify(event: ProcessingStageEvent) {
  */
 export function ProcessingNotifications() {
   const cursor = useRef<number | null>(null);
+  const idleConfirmationPending = useRef(false);
+  const client = useQueryClient();
   const feed = useQuery({
     queryKey: queryKeys.processingEvents,
     queryFn: () => api.processing.events(cursor.current ?? undefined),
@@ -92,10 +95,26 @@ export function ProcessingNotifications() {
 
     // The no-cursor response establishes the baseline and must stay silent.
     if (previous === null) return;
-    for (const event of events) {
-      if (event.id > previous) notify(event);
+    const unseen = events.filter((event) => event.id > previous);
+    const queueFinished = unseen.some((event) => event.stage === "queue_idle");
+    for (const event of unseen) {
+      if (event.stage !== "queue_idle") notify(event);
     }
-  }, [feed.data]);
+
+    // Confirm the queue is still empty on the following poll. This collapses
+    // fast parent/child or batch transitions into one true end-of-queue notice.
+    if (feed.data.queue_depth > 0) {
+      idleConfirmationPending.current = false;
+    } else if (queueFinished) {
+      idleConfirmationPending.current = true;
+    } else if (idleConfirmationPending.current) {
+      idleConfirmationPending.current = false;
+      void sendQueueIdleNotification();
+      void client.invalidateQueries({ queryKey: queryKeys.jobs });
+      void client.invalidateQueries({ queryKey: queryKeys.applications });
+      void client.invalidateQueries({ queryKey: queryKeys.dashboard });
+    }
+  }, [client, feed.data]);
 
   return null;
 }

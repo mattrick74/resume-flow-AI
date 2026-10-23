@@ -99,6 +99,9 @@ Review Queue for approval as usual, so nothing changes about human review or exp
 - **Failures are visible and retryable:** the job turns `FAILED` with a `processing_failed` warning; queueing it again
   re-runs the pipeline. Cancelling a queued run returns the job to `DRAFT`.
 - Saved jobs show an offline title/company/location guess until analysis sets the real values.
+- **One queue-complete notification:** the last queued/running processing row becoming terminal records a durable
+  `queue_idle` event. The desktop confirms the global queue remains empty on its next poll, then sends one native
+  Windows notification. Delayed retries still count as queued, and intermediate resume/export stages do not notify.
 
 Applications: `MATCHED → GENERATING → VALIDATING → AWAITING_REVIEW → APPROVED → EXPORTED → SUBMITTED →
 INTERVIEW / OFFER / REJECTED`, plus `FAILED` (retryable). APPROVED and EXPORTED can return to
@@ -282,7 +285,7 @@ All routes except `/health` require `Authorization: Bearer <session token>`. Err
 | Candidates | `GET/POST /candidates` · `POST /candidates/{id}/resumes/{vid}/reextract` · `POST /candidates/import` · `GET/PATCH/DELETE /candidates/{id}` · `POST /candidates/{id}/resumes` · `GET /candidates/{id}/resumes/{vid}` · `POST …/apply-profile` · `POST /candidates/{id}/review-complete` · skills CRUD + `bulk` + `verify-with-evidence` · `POST …/skills/confirm-bulk` · `GET/POST …/experience-evidence` · `PATCH/DELETE …/experience-evidence/{rid}` · `POST …/experience-evidence/approve` |
 | Jobs | `GET/POST /jobs` (409 `duplicate_job` unless `confirm_duplicate`; `url_in_history`) · `POST /jobs/batch` (per-item `created`/`duplicate`/`skipped`/`invalid`; optional `process`) · `POST /jobs/process` (202; `job_ids` or `all_saved`) · `GET/PATCH/DELETE /jobs/{id}` · `POST /jobs/{id}/analyze` · `POST /jobs/{id}/match` · `POST /jobs/{id}/rematch` · `PUT /jobs/{id}/requirements` · `GET /jobs/{id}/skill-gaps` · `POST /jobs/skill-gaps/batch` |
 | Applications | `GET/POST /applications` · `GET /applications/{id}` · `POST …/generate` · `PUT …/documents/{type}` · `GET …/documents/{type}/versions/{n}` · `POST …/approve` · `POST …/export` · `POST …/retry-pdf` · `POST …/outcome` · `POST …/suggest-additions` · `POST …/approve-additions` · `GET …/coverage` |
-| Processing | `GET /processing-jobs` · `GET /processing-jobs/{id}` · `POST …/retry` · `POST …/cancel` |
+| Processing | `GET /processing-jobs` · `GET /processing-jobs/events` (cursor events + global `queue_depth`) · `GET /processing-jobs/{id}` · `POST …/retry` · `POST …/cancel` |
 | Templates | `GET /templates` · `POST /templates/import` (DOCX/PDF upload) · `POST /templates/from-resume` · `PATCH/DELETE /templates/{id}` · `POST /templates/sample` |
 | Operations | `GET /analytics?days=` · `GET/POST /backups` · `POST /backups/restore` · `POST /system/open` · `POST /system/open-url` · `GET /system/pdf-converter` |
 

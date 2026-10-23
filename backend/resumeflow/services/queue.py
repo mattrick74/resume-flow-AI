@@ -18,7 +18,7 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
-from sqlalchemy import select, update
+from sqlalchemy import func, select, update
 from sqlalchemy.orm import Session, sessionmaker
 
 from resumeflow.db.models import Application, Candidate, Job, ProcessingJob, ProcessingStageEvent
@@ -27,6 +27,7 @@ from resumeflow.errors import AppError
 
 logger = logging.getLogger(__name__)
 MAX_WORKERS = 8
+ACTIVE_STATUSES = (ProcessingStatus.QUEUED, ProcessingStatus.RUNNING)
 
 
 class JobCancelled(Exception):
@@ -84,6 +85,39 @@ def record_stage_event(
     except Exception:
         db.rollback()
         logger.exception("Could not record stage %s", stage)
+
+
+def record_queue_idle_if_empty(db: Session, last_job: ProcessingJob) -> bool:
+    """Record one durable global event when ``last_job`` drains the entire queue.
+
+    The caller changes the terminal job and calls this helper in the same write
+    transaction. SQLite serializes those writers, so concurrent workers cannot
+    both observe themselves as the last active job.
+    """
+    active = (
+        db.scalar(
+            select(func.count())
+            .select_from(ProcessingJob)
+            .where(ProcessingJob.status.in_(ACTIVE_STATUSES))
+        )
+        or 0
+    )
+    if active:
+        return False
+    db.add(
+        ProcessingStageEvent(
+            processing_job_id=last_job.id,
+            stage="queue_idle",
+            status="succeeded",
+            message="All queued work has finished",
+            duration_ms=0,
+            details_json={
+                "last_job_type": last_job.job_type.value,
+                "last_job_status": last_job.status.value,
+            },
+        )
+    )
+    return True
 
 
 @dataclass
@@ -229,8 +263,24 @@ class ProcessingQueue:
     def cancel(self, db: Session, processing_job_id: str) -> ProcessingJob:
         job = self.get(db, processing_job_id)
         if job.status == ProcessingStatus.QUEUED:
-            job.status = ProcessingStatus.CANCELLED
-            job.finished_at = _now()
+            # Claiming is a conditional UPDATE too.  Do not let a stale QUEUED
+            # object overwrite RUNNING when a worker wins this race.
+            result = db.execute(
+                update(ProcessingJob)
+                .where(
+                    ProcessingJob.id == processing_job_id,
+                    ProcessingJob.status == ProcessingStatus.QUEUED,
+                )
+                .values(status=ProcessingStatus.CANCELLED, finished_at=_now())
+                .execution_options(synchronize_session=False)
+            )
+            db.refresh(job)
+            if result.rowcount == 1:
+                record_queue_idle_if_empty(db, job)
+            elif job.status == ProcessingStatus.RUNNING:
+                job.cancel_requested = True
+            else:
+                raise AppError(409, "not_cancellable", "This work has already finished")
         elif job.status == ProcessingStatus.RUNNING:
             job.cancel_requested = True
         else:
@@ -287,13 +337,8 @@ class ProcessingQueue:
                 raise RuntimeError(f"No handler registered for {ctx.job_type}")
             handler(ctx)
         except JobCancelled as exc:
+            self._run_failure_hook(ctx, exc)
             self._finish(ctx.id, ProcessingStatus.CANCELLED, "Cancelled by operator")
-            hook = self._failure_hooks.get(ctx.job_type)
-            if hook:
-                try:
-                    hook(ctx, exc)
-                except Exception:
-                    logger.exception("Failure hook for %s raised", ctx.job_type)
             return
         except Exception as exc:  # noqa: BLE001 - every failure is recorded on the job row
             self._handle_failure(ctx, exc)
@@ -302,11 +347,17 @@ class ProcessingQueue:
 
     def _finish(self, job_id: str, status: ProcessingStatus, error: str | None) -> None:
         with self.session_factory() as db:
-            db.execute(
-                update(ProcessingJob)
-                .where(ProcessingJob.id == job_id)
-                .values(status=status, error=error, finished_at=_now(), progress=100 if status == ProcessingStatus.SUCCEEDED else ProcessingJob.progress, locked_by=None)
-            )
+            row = self.get(db, job_id)
+            if row.status != ProcessingStatus.RUNNING:
+                return
+            row.status = status
+            row.error = error
+            row.finished_at = _now()
+            row.locked_by = None
+            if status == ProcessingStatus.SUCCEEDED:
+                row.progress = 100
+            db.flush()
+            record_queue_idle_if_empty(db, row)
             db.commit()
 
     def _handle_failure(self, ctx: JobContext, exc: Exception) -> None:
@@ -314,20 +365,45 @@ class ProcessingQueue:
         message = str(exc) or type(exc).__name__
         if not transient:
             logger.exception("Processing job %s (%s) failed", ctx.id, ctx.job_type)
+
+        cancelled = False
         with self.session_factory() as db:
             row = self.get(db, ctx.id)
-            row.retry_count += 1
-            row.error = message[:2000]
-            row.locked_by = None
-            if transient and row.retry_count <= row.max_retries:
+            if row.status != ProcessingStatus.RUNNING:
+                return
+            cancelled = row.cancel_requested
+            next_retry = row.retry_count + 1
+            if not cancelled and transient and next_retry <= row.max_retries:
+                row.retry_count = next_retry
+                row.error = message[:2000]
+                row.locked_by = None
                 row.status = ProcessingStatus.QUEUED
-                row.run_after = _now() + timedelta(seconds=backoff_seconds(row.retry_count))
+                row.run_after = _now() + timedelta(seconds=backoff_seconds(next_retry))
                 db.commit()
                 self._wake.set()
                 return
-            row.status = ProcessingStatus.FAILED
+
+        final_error = "Cancelled by operator" if cancelled else message[:2000]
+        final_status = ProcessingStatus.CANCELLED if cancelled else ProcessingStatus.FAILED
+        final_exc = JobCancelled() if cancelled else exc
+        # Cleanup is part of the work.  Keep the processing row RUNNING until
+        # its failure hook finishes so queue_idle cannot be observed early.
+        self._run_failure_hook(ctx, final_exc)
+        with self.session_factory() as db:
+            row = self.get(db, ctx.id)
+            if row.status != ProcessingStatus.RUNNING:
+                return
+            if not cancelled:
+                row.retry_count += 1
+            row.error = final_error
+            row.locked_by = None
+            row.status = final_status
             row.finished_at = _now()
+            db.flush()
+            record_queue_idle_if_empty(db, row)
             db.commit()
+
+    def _run_failure_hook(self, ctx: JobContext, exc: Exception) -> None:
         hook = self._failure_hooks.get(ctx.job_type)
         if hook:
             try:
