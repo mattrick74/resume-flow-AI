@@ -571,63 +571,19 @@ def request_pdf_retry(db: Session, queue: ProcessingQueue, app: Application) -> 
     )
 
 
-_URL_PART_MAX = 60
-_FOLDER_SEP = "_-_"
-
-
-def _keep_end(text: str, length: int) -> str:
-    """The last ``length`` characters, starting at a word boundary ("job-detail_d959..." -> "d959...", not "ob-detail_...")."""
-    if len(text) <= length:
-        return text
-    kept = ""
-    for segment in reversed(text.split("_")):  # whole URL parts from the end; the posting id is last
-        candidate = f"{segment}_{kept}" if kept else segment
-        if len(candidate) > length:
-            break
-        kept = candidate
-    if kept:
-        return kept
-    tail = text[-length:]  # even the last part is too long: cut it at a hyphen
-    if text[-length - 1].isalnum() and "-" in tail:
-        tail = tail[tail.index("-") + 1 :]
-    return tail.lstrip("._-")
-
-
-def job_folders(job: Job, max_length: int = 120) -> tuple[str, str]:
-    """``("dice.com", "Senior_Data_Engineer_-_job-detail_8f3a2c1e")`` for a posting.
-
-    The site folder is the posting's host (``www.`` and tracking parameters are already
-    stripped by URL normalization). The job folder is the position plus the rest of the
-    URL, at most ``max_length`` characters: a long URL keeps its end, where job boards put
-    the posting id, and only then is the position shortened.
-    """
-    host, _, rest = job.normalized_url.partition("/")
-    site = sanitize_component(host, fallback="Unknown_site")
-    url_part = sanitize_component(rest, max_length=1000, fallback=site)
-    position = sanitize_component(job.title, max_length=50, fallback="Position")
-    url_part = _keep_end(url_part, max(16, min(_URL_PART_MAX, max_length - len(position) - len(_FOLDER_SEP))))
-    if len(position) + len(_FOLDER_SEP) + len(url_part) > max_length:
-        position = position[: max(12, max_length - len(_FOLDER_SEP) - len(url_part))].rstrip("._-")
-    return site, f"{position}{_FOLDER_SEP}{url_part}"
-
-
 def _output_layout(db: Session, app: Application) -> tuple[Path, str]:
-    """Choose the URL-based layout, or ``instant resumes/MM-DD-YYYY/title`` when no URL was supplied."""
+    """``<output root>/YYYY-MM-DD/NNN Profile Name`` for every application."""
     settings = load_settings(db)
     candidate = db.get(Candidate, app.candidate_id)
     job = db.get(Job, app.job_id)
     prefix = f"{app.sequence_number:03d}_{sanitize_component(job.company or job.title or 'Job', max_length=40)}"
     longest_file = len(prefix) + 1 + max(len(name) for name in _FILE_NAMES.values()) + len("_v99")
-    if not job.normalized_url:
-        parent = Path(settings.output_root) / "instant resumes" / app.application_date.strftime("%m-%d-%Y")
-        available = max(12, min(80, MAX_PATH_LENGTH - len(str(parent)) - 2 - longest_file))
-        title = sanitize_component(job.title, max_length=available, fallback="Untitled_job")
-        return parent / title, prefix
-    site, _ = job_folders(job)
-    base = Path(settings.output_root) / app.application_date.isoformat() / sanitize_component(candidate.full_name) / site
-    # Size the job folder so the longest file name (plus a "_v99" suffix) stays within the Windows path limit.
-    _, job_folder = job_folders(job, max_length=max(28, MAX_PATH_LENGTH - len(str(base)) - 2 - longest_file))
-    return base / job_folder, prefix
+    parent = Path(settings.output_root) / app.application_date.isoformat()
+    number = f"{app.sequence_number:03d}"
+    # Size the profile portion so the longest file name (plus a "_v99" suffix) stays within the Windows path limit.
+    available = max(12, min(80, MAX_PATH_LENGTH - len(str(parent)) - len(number) - longest_file - 3))
+    profile = sanitize_component(candidate.full_name, max_length=available, fallback="Profile").replace("_", " ")
+    return parent / f"{number} {profile}", prefix
 
 
 _FILE_NAMES = {
@@ -864,6 +820,9 @@ def handle_export(ctx: JobContext) -> None:
         cover = CoverLetterContent.model_validate(cover_doc.content_json)
         versions = (resume_doc.version, cover_doc.version)
         folder, prefix = _output_layout(db, app)
+        if app.output_directory:
+            # Regeneration of an application exported by an older release must keep every version together.
+            folder = Path(app.output_directory)
         raw_jd, url, app_id = job.raw_jd, job.job_url, app.id
         template = resolve_style(db, settings.resume_template)
         keep_word = settings.output_formats == "pdf_docx"

@@ -71,13 +71,12 @@ for the architecture, API, test strategy and remaining risks.
    single section, then *Approve*. **Coverage** shows the job's required and preferred skills covered before (original resume)
    and after, what's missing, near-duplicate bullets and suggestions, plus every added, reworded and unused bullet. **Improve**
    lists skills to answer and drafted bullets; *Regenerate with approved additions* rebuilds the documents from the updated profile.
-7. **Export.** Files are written to `Applications\YYYY-MM-DD\Candidate_Name\<site>\<Position>_-_<url>\`, for
-   example `2026-10-14\Avery_Quinlan\dice.com\Senior_Data_Engineer_-_job-detail_8f3a2c1e\`, as
-   `NNN_Company_Resume.pdf`, `_Cover_Letter.pdf`, `_JD.txt`, `_Job_URL.txt` and `_Metadata.json` (Settings → Files to save:
-   PDF only by default; the Word file is saved only if no PDF can be made, or when you choose PDF and Word).
-   The site folder is the posting's domain (without `www.`); the job folder is the position plus the rest of the
-   URL. Long names are shortened to stay within the Windows path limit, keeping the end of the URL where the
-   posting ID is. Existing files are never overwritten.
+7. **Export.** Files are written to `Applications\YYYY-MM-DD\NNN Profile Name\`, for example
+   `2026-10-14\001 Avery Quinlan\`, as `NNN_Company_Resume.pdf`, `_Cover_Letter.pdf`, `_JD.txt`, `_Job_URL.txt`
+   and `_Metadata.json` (Settings → Files to save: PDF only by default; the Word file is saved only if no PDF can
+   be made, or when you choose PDF and Word). The number is the application's sequence for that date. A job without
+   a URL uses the same folder layout and simply omits `_Job_URL.txt`. Long profile names are shortened to stay within
+   the Windows path limit. Existing files are never overwritten.
    **Templates** (Settings → Templates) set the look: Professional, Compact, or any style copied from a resume
    you like. *Copy style from a resume…* reads a DOCX or text-based PDF (or use *Use as template* on a candidate's
    resume version) and keeps only its look: fonts, sizes, colors, heading style, name alignment and margins, never

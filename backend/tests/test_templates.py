@@ -11,7 +11,7 @@ from resumeflow.services.render import render_resume
 from resumeflow.services.template_extract import extract_style, normalize_pdf_font
 from resumeflow.services.templates import sample_resume
 from tests.conftest import DOCX, upload
-from tests.test_workflow import ACME_JOB, ACME_SITE, drain, generated_app, setup  # noqa: F401  (fixture)
+from tests.test_workflow import drain, generated_app, setup  # noqa: F401  (fixture)
 
 DISTINCT = TemplateStyle(
     font="Georgia",
@@ -177,6 +177,6 @@ def test_export_uses_the_selected_template(client, setup):
     exported = client.get(f"/applications/{app['id']}").json()
     assert exported["status"] == "EXPORTED"
     resume = next(f["path"] for f in exported["files"] if f["type"] == "resume" and f["format"] == "docx")
-    assert Path(resume).parent.parent.name == ACME_SITE and Path(resume).parent.name == ACME_JOB
+    assert Path(resume).parent.name == "001 Avery Quinlan"
     assert extract_style("docx", Path(resume).read_bytes()).style.model_dump(exclude={"paragraph_space"}) == DISTINCT.model_dump(exclude={"paragraph_space"})
     assert DocxDocument(resume).styles["Normal"].font.name == "Georgia"

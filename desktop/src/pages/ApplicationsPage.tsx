@@ -89,7 +89,7 @@ export function ApplicationsPage() {
           <EmptyState
             icon={FolderOpen}
             title="No applications match"
-            description="Applications appear here once you choose a candidate for a job. Jobs without a URL are saved under instant resumes/MM-DD-YYYY/title."
+            description="Applications appear here once you choose a candidate for a job. Files are saved under date / daily number and profile name."
             className="py-14"
           />
         </Card>

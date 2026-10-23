@@ -191,7 +191,7 @@ function SettingsForm({ data }: { data: SettingsResponse }) {
       <MatchingWeightsSection settings={saved} />
 
       <Section title="Output" description="Where exported documents are written. Existing files are never overwritten.">
-        <Row label="Output folder" htmlFor="output_root" hint="Jobs without a URL are saved as instant resumes/MM-DD-YYYY/title. Jobs with a URL keep the normal dated candidate/site folder layout." error={errors.output_root}>
+        <Row label="Output folder" htmlFor="output_root" hint="Every export is saved as YYYY-MM-DD / daily number and profile name, for example 001 Avery Quinlan." error={errors.output_root}>
           {field("output_root", { spellCheck: false })}
         </Row>
       </Section>

@@ -8,16 +8,13 @@ import pytest
 from docx import Document as DocxDocument
 from sqlalchemy import select, update
 
-from resumeflow.db.models import Application, ProcessingJob
+from resumeflow.db.models import Application, Job, ProcessingJob
 from resumeflow.devtools.sample_data import SAMPLE_CANDIDATES, SAMPLE_JOBS
 from resumeflow.domain.enums import ProcessingStatus
 from resumeflow.services.ai.provider import AIError, TransientAIError
 from tests.conftest import make_ready, upload
 
-# Export layout: <root>/YYYY-MM-DD/Candidate_Name/<site>/<Position>_-_<url>/
-# for https://careers.example.com/jobs/senior-data-engineer-4821?utm_source=board (tracking parameter dropped).
-ACME_SITE = "careers.example.com"
-ACME_JOB = "Senior_Data_Engineer_-_jobs_senior-data-engineer-4821"
+# Export layout: <root>/YYYY-MM-DD/<daily sequence> <profile name>/
 
 
 @pytest.fixture
@@ -117,7 +114,7 @@ def test_export_writes_exact_layout(client, setup):
     drain(client)
     exported = client.get(f"/applications/{app['id']}").json()
     assert exported["status"] == "EXPORTED"  # never SUBMITTED automatically
-    folder = setup["out"] / date.today().isoformat() / "Avery_Quinlan" / ACME_SITE / ACME_JOB
+    folder = setup["out"] / date.today().isoformat() / "001 Avery Quinlan"
     names = sorted(p.name for p in folder.iterdir())
     assert names == sorted(
         [
@@ -165,41 +162,14 @@ def test_exported_status_comes_after_every_file(client, setup, monkeypatch):
     assert all(f["exists"] for f in exported["files"])
 
 
-@pytest.mark.parametrize(
-    ("url", "title", "site", "job_folder"),
-    [
-        ("https://www.dice.com/job-detail/8f3a2c1e-77b1?searchlink=search", "Java Developer", "dice.com", "Java_Developer_-_job-detail_8f3a2c1e-77b1_searchlink=search"),
-        ("https://www.indeed.com/viewjob?jk=abc123&utm_source=x", "Data Analyst / BI", "indeed.com", "Data_Analyst_BI_-_viewjob_jk=abc123"),
-        ("https://acme.example.com", None, "acme.example.com", "Position_-_acme.example.com"),
-        ("https://boards.example.io/acme/jobs/" + "x" * 120 + "-id987", "Engineer", "boards.example.io", "Engineer_-_id987"),  # an over-long URL part is cut at a hyphen, keeping the posting id
-    ],
-)
-def test_job_folders_name_the_site_and_posting(url, title, site, job_folder):
-    from resumeflow.db.models import Job
-    from resumeflow.services.applications import job_folders
-    from resumeflow.services.jobs import normalize_url
-
-    assert job_folders(Job(normalized_url=normalize_url(url), title=title)) == (site, job_folder)
-
-
-def test_job_folder_shrinks_to_fit_the_path_limit():
-    from resumeflow.db.models import Job
-    from resumeflow.services.applications import job_folders
-
-    job = Job(normalized_url="dice.com/job-detail/senior-platform-engineer-remote-8f3a2c1e", title="Senior Platform Engineer, Cloud Infrastructure")
-    _, roomy = job_folders(job)
-    assert roomy == "Senior_Platform_Engineer,_Cloud_Infrastructure_-_job-detail_senior-platform-engineer-remote-8f3a2c1e"
-    _, tight = job_folders(job, max_length=40)
-    assert len(tight) <= 40
-    assert tight.endswith("8f3a2c1e")  # the posting id survives; the position is shortened instead
-
-
 def test_long_output_folder_still_exports_within_the_path_limit(client, setup, tmp_path_factory):
-    # A 120-character output folder: the full job folder name would not fit, a shortened one does.
+    # A long root and profile name are shortened without exceeding the Windows path limit.
     base = tmp_path_factory.mktemp("o")
     deep = base / ("Long_Shared_Folder_" * 10)[: 120 - len(str(base)) - 1]
     assert len(str(deep)) == 120
     client.patch("/settings", json={"output_root": str(deep)})
+    long_name = "Avery " + ("Very Long Profile Name " * 8)
+    client.patch(f"/candidates/{setup['candidates']['Avery Quinlan']}", json={"full_name": long_name})
     app = generated_app(client, setup)
     client.post(f"/applications/{app['id']}/approve", json={})
     client.post(f"/applications/{app['id']}/export")
@@ -207,14 +177,14 @@ def test_long_output_folder_still_exports_within_the_path_limit(client, setup, t
     exported = client.get(f"/applications/{app['id']}").json()
     assert exported["status"] == "EXPORTED", exported.get("error")
     folder = Path(exported["output_directory"])
-    assert folder.parent.name == ACME_SITE
-    assert folder.name.startswith("Senior_Data") and folder.name.endswith("-4821")  # position start and posting id survive
-    assert len(folder.name) < len(ACME_JOB)
+    assert folder.parent == deep / date.today().isoformat()
+    assert folder.name.startswith("001 Avery Very Long Profile Name")
+    assert len(folder.name) < len(f"001 {long_name}")
     assert all(len(f["path"]) <= 240 for f in exported["files"])
 
 
 def test_export_never_overwrites(client, setup):
-    folder = setup["out"] / date.today().isoformat() / "Avery_Quinlan" / ACME_SITE / ACME_JOB
+    folder = setup["out"] / date.today().isoformat() / "001 Avery Quinlan"
     folder.mkdir(parents=True)
     existing = folder / "001_Acme_Data_Co_Resume.docx"
     existing.write_bytes(b"operator's own file")
@@ -224,6 +194,26 @@ def test_export_never_overwrites(client, setup):
     drain(client)
     assert existing.read_bytes() == b"operator's own file"
     assert (folder / "001_Acme_Data_Co_Resume_v2.docx").exists()
+
+
+def test_url_less_export_uses_the_same_numbered_profile_folder(client, setup, db):
+    job = db.get(Job, setup["job"]["id"])
+    job.job_url = ""
+    job.normalized_url = ""
+    db.commit()
+
+    app = generated_app(client, setup)
+    client.post(f"/applications/{app['id']}/approve", json={})
+    client.post(f"/applications/{app['id']}/export")
+    drain(client)
+
+    exported = client.get(f"/applications/{app['id']}").json()
+    folder = setup["out"] / date.today().isoformat() / "001 Avery Quinlan"
+    assert Path(exported["output_directory"]) == folder
+    assert folder.is_dir()
+    assert not any(path.name.endswith("Job_URL.txt") for path in folder.iterdir())
+    metadata = json.loads((folder / "001_Acme_Data_Co_Metadata.json").read_text(encoding="utf-8"))
+    assert metadata["source_url"] is None
 
 
 def test_pdf_failure_keeps_docx_and_retry_succeeds(client, setup, monkeypatch):
