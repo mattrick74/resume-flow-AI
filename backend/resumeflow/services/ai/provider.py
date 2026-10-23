@@ -7,7 +7,7 @@ import re
 from threading import BoundedSemaphore
 from typing import NamedTuple, Protocol, TypeVar
 
-from pydantic import BaseModel
+from pydantic import BaseModel, ValidationError
 
 T = TypeVar("T", bound=BaseModel)
 logger = logging.getLogger(__name__)
@@ -53,7 +53,11 @@ class AIConfigError(AIError):
 
 
 class AIOutputError(AIError):
-    """The model returned nothing usable (refusal, truncation)."""
+    """The model returned no usable completed result (for example, a refusal)."""
+
+
+class AIIncompleteOutputError(TransientAIError):
+    """A structured response ended before it could be parsed and may succeed on retry."""
 
 
 class BudgetExceeded(AIError):
@@ -154,6 +158,41 @@ class OpenAIProvider:
             if exc.status_code >= 500:
                 raise TransientAIError(f"OpenAI error {exc.status_code}; will retry.") from exc
             raise AIError(f"OpenAI error {exc.status_code}: {getattr(exc, 'message', exc)}") from exc
+        except ValidationError as exc:
+            # The Responses SDK validates ``response.output_text.done`` before
+            # returning the final response. If output hits its token limit, the
+            # JSON can end in the middle of a string and Pydantic raises here,
+            # before ``response.status`` or ``incomplete_details`` is available.
+            error_types = {str(error.get("type", "validation_error")) for error in exc.errors()}
+            if "json_invalid" in error_types:
+                logger.warning(
+                    "OpenAI returned incomplete structured JSON (validation types=%s)",
+                    ",".join(sorted(error_types)),
+                )
+                raise AIIncompleteOutputError(
+                    "OpenAI returned incomplete structured JSON.",
+                    # The SDK raises before exposing response.usage. Charging the
+                    # requested ceiling is conservative and prevents retries from
+                    # bypassing the application's cost budget.
+                    usage=AIUsage(output_tokens=max_output_tokens),
+                ) from exc
+            logger.warning(
+                "OpenAI structured response did not match its schema (validation types=%s)",
+                ",".join(sorted(error_types)),
+            )
+            raise AIOutputError("OpenAI returned a structured response in an unexpected format.") from exc
+        except RuntimeError as exc:
+            # Incomplete streamed Responses do not emit response.completed, so
+            # get_final_response() cannot return the object containing the
+            # max_output_tokens reason. Treat only that SDK message as retryable;
+            # unrelated RuntimeErrors remain programming errors.
+            if "Didn't receive" in str(exc) and "response.completed" in str(exc):
+                logger.warning("OpenAI structured response stream ended before completion")
+                raise AIIncompleteOutputError(
+                    "OpenAI ended the structured response before completion.",
+                    usage=AIUsage(output_tokens=max_output_tokens),
+                ) from exc
+            raise
 
         usage = response.usage
         if usage:
@@ -176,6 +215,13 @@ class OpenAIProvider:
             tokens = AIUsage()
         parsed = response.output_parsed
         if parsed is None:
-            reason = getattr(response.incomplete_details, "reason", None) or response.status or "no output"
+            details = getattr(response, "incomplete_details", None)
+            status = getattr(response, "status", None)
+            reason = getattr(details, "reason", None) or status or "no output"
+            if status == "incomplete" and reason == "max_output_tokens":
+                raise AIIncompleteOutputError(
+                    "OpenAI reached the structured response token limit.",
+                    usage=tokens,
+                )
             raise AIOutputError(f"The model returned no structured result ({reason}).", usage=tokens)
         return parsed, tokens

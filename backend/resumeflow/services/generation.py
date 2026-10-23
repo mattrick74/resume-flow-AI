@@ -10,7 +10,6 @@ Two modes, same output shape:
 
 from __future__ import annotations
 
-from pprint import pprint
 import re
 import time
 from collections.abc import Callable
@@ -32,7 +31,12 @@ from resumeflow.domain.content import (
 from resumeflow.domain.enums import GenerationOperation
 from resumeflow.domain.requirements import JobRequirements
 from resumeflow.domain.skills import detect_tools, display_name, find_skill_in_text, normalize_skill, skill_covers
-from resumeflow.services.ai.provider import AIConfigError, AIError, BudgetExceeded
+from resumeflow.services.ai.provider import (
+    AIConfigError,
+    AIError,
+    AIIncompleteOutputError,
+    BudgetExceeded,
+)
 from resumeflow.services.ai.service import UNTRUSTED_NOTICE, AIService, wrap
 from resumeflow.services.evidence import bullet_index, evidence_listing, years_phrase
 from resumeflow.services.inference import (
@@ -333,6 +337,13 @@ Do not ask questions or require additional API calls.
 Follow the application's structured output schema exactly.
 
 The final output must clearly distinguish verified experience from proposed experience requiring candidate confirmation.
+
+## 8. OUTPUT SIZE
+
+- Keep the summary concise (no more than 120 words) and the headline to one short line.
+- Return at most {MAX_SKILLS} skills.
+- Return at most {recent_max} bullets for each of the two most recent roles and at most {older_max} bullets for each older role.
+- Return exactly one concise placement for each skill in <missing_job_skills>; keep each reason to one sentence.
 """
 # IMPORTANT:
 # Your primary goal is to maximize truthful JD skill coverage
@@ -1011,9 +1022,6 @@ def ai_resume(
         ]
     )
 
-    with open("1112321output.txt", "w", encoding="utf-8") as f:
-            f.write(operator_notes(resume_instructions(density) + "\n\n" + EXPANSION_INSTRUCTIONS, instructions))
-
     result = ai.run(
         operation=GenerationOperation.RESUME_GENERATION,
         role="writing",
@@ -1045,12 +1053,13 @@ def ai_resume(
         ),
         schema=AIResumeTailoring,
         application_id=application_id,
-        max_output_tokens=6000,
+        # This schema contains the complete resume plus skill-placement records.
+        # A 6k cap occasionally cut valid JSON mid-string. The model is still
+        # asked for bounded content, so normal responses keep their prior cost.
+        max_output_tokens=12_000,
         cache_prefix=candidate_prefix,
     )
     expanded, expansion_notes = expand_snapshot(snap, req, semantic, exclude, result.placements, raw_jd)
-    with open("1111111output.txt", "w", encoding="utf-8") as f:
-        f.write(str(result))
     baseline = deterministic_resume(expanded, req, density)
     verified_skills = [s["name"] for s in expanded.get("skills", [])]
     notes: list[str] = []
@@ -1340,7 +1349,7 @@ def generate_documents(
     outcomes = run_concurrently(calls)
     outcomes = retry_transient_calls(calls, outcomes)
     for value, error in outcomes.values():
-        if isinstance(error, AIError) and error.transient:
+        if isinstance(error, AIError) and error.transient and not isinstance(error, AIIncompleteOutputError):
             raise error  # the queue retries the whole generation only after focused retries are exhausted
         if error is not None and not isinstance(error, AIError):
             raise error

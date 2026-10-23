@@ -10,8 +10,8 @@ from sqlalchemy import select, update
 
 from resumeflow.db.models import Application, ProcessingJob
 from resumeflow.devtools.sample_data import SAMPLE_CANDIDATES, SAMPLE_JOBS
-from resumeflow.domain.enums import ProcessingStatus
-from resumeflow.services.ai.provider import AIError, TransientAIError
+from resumeflow.domain.enums import ProcessingJobType, ProcessingStatus
+from resumeflow.services.ai.provider import AIError, AIIncompleteOutputError, TransientAIError
 from tests.conftest import make_ready, upload
 
 # Export layout: <root>/YYYY-MM-DD/<daily sequence> <profile name>/
@@ -319,7 +319,7 @@ def test_ai_documents_are_saved_as_written_without_a_checking_step(client, setup
     assert "<candidate_evidence>" in resume_call["cache_prefix"]
     assert "<job_description>" not in resume_call["cache_prefix"]
     assert "<candidate_evidence>" in cover_call["cache_prefix"]
-    assert resume_call["max_output_tokens"] == 6_000
+    assert resume_call["max_output_tokens"] == 12_000
     assert cover_call["max_output_tokens"] == 3_000
 
 
@@ -343,6 +343,43 @@ def test_transient_document_failure_retries_only_failed_call(client, setup, secr
     assert calls["n"] == 2
     assert len([call for call in fake_ai.calls if call["schema"] == "AICoverLetter"]) == 1
     assert client.get(f"/applications/{app['id']}").json()["status"] == "AWAITING_REVIEW"
+
+
+def test_repeated_incomplete_json_falls_back_without_repeating_cover(client, setup, secret_store, fake_ai, db):
+    secret_store.set("openai_api_key", "sk-test-key-123456")
+    resume_calls = {"n": 0}
+
+    def truncated(_text: str):
+        resume_calls["n"] += 1
+        raise AIIncompleteOutputError("OpenAI returned incomplete structured JSON.")
+
+    fake_ai.on("AIResumeTailoring", truncated)
+    fake_ai.on(
+        "AICoverLetter",
+        lambda _text: {
+            "greeting": "Dear team,",
+            "paragraphs": [{"text": "Hello Acme Data Co.", "evidence_ids": []}],
+            "closing": "Thanks,",
+        },
+    )
+    app = create(client, setup).json()
+    drain(client)
+
+    generation_job = db.scalars(
+        select(ProcessingJob).where(
+            ProcessingJob.application_id == app["id"],
+            ProcessingJob.job_type == ProcessingJobType.GENERATE_DOCUMENTS,
+        )
+    ).one()
+    detail = client.get(f"/applications/{app['id']}").json()
+
+    assert generation_job.status == ProcessingStatus.SUCCEEDED
+    assert generation_job.retry_count == 0
+    assert resume_calls["n"] == 3
+    assert len([call for call in fake_ai.calls if call["schema"] == "AICoverLetter"]) == 1
+    assert detail["resume"]["mode"] == "deterministic"
+    assert detail["status"] == "EXPORTED"
+    assert any("incomplete structured JSON" in issue["message"] for issue in detail["resume"]["issues"])
 
 
 def test_non_transient_ai_error_falls_back_to_deterministic(client, setup, secret_store, fake_ai):

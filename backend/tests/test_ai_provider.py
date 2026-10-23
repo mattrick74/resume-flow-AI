@@ -2,9 +2,10 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
-from pydantic import BaseModel
+import pytest
+from pydantic import BaseModel, ValidationError
 
-from resumeflow.services.ai.provider import AIUsage, OpenAIProvider
+from resumeflow.services.ai.provider import AIIncompleteOutputError, AIUsage, OpenAIProvider
 from resumeflow.services.ai.service import estimate_cost_micros
 
 
@@ -43,6 +44,28 @@ class RecordingStream:
 
     def get_final_response(self):
         return self.response
+
+
+class RaisingResponses:
+    def __init__(self, error: Exception) -> None:
+        self.error = error
+
+    def stream(self, **_request):
+        return RaisingStream(self.error)
+
+
+class RaisingStream:
+    def __init__(self, error: Exception) -> None:
+        self.error = error
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_args) -> None:
+        return None
+
+    def get_final_response(self):
+        raise self.error
 
 
 def provider_with_recorder() -> tuple[OpenAIProvider, RecordingResponses]:
@@ -100,3 +123,71 @@ def test_cached_usage_reduces_estimated_cost_for_gpt_6_1_sol():
 
     assert uncached == 5_000
     assert cached == 2_250
+
+
+def test_truncated_structured_json_is_converted_to_retryable_error():
+    with pytest.raises(ValidationError) as captured:
+        ExampleResult.model_validate_json('{"value":"unfinished')
+    parse_error = captured.value
+    provider = OpenAIProvider.__new__(OpenAIProvider)
+    provider._client = SimpleNamespace(responses=RaisingResponses(parse_error))
+
+    with pytest.raises(AIIncompleteOutputError, match="incomplete structured JSON") as raised:
+        provider.structured(
+            model="gpt-6.1-sol",
+            instructions="write accurately",
+            input_text="job",
+            schema=ExampleResult,
+            max_output_tokens=12_000,
+        )
+
+    assert raised.value.transient is True
+    assert raised.value.__cause__ is parse_error
+    assert raised.value.usage == AIUsage(output_tokens=12_000)
+    assert "unfinished" not in str(raised.value)
+
+
+def test_incomplete_stream_without_completed_event_is_retryable():
+    stream_error = RuntimeError("Didn't receive a `response.completed` event.")
+    provider = OpenAIProvider.__new__(OpenAIProvider)
+    provider._client = SimpleNamespace(responses=RaisingResponses(stream_error))
+
+    with pytest.raises(AIIncompleteOutputError, match="before completion") as raised:
+        provider.structured(
+            model="gpt-6.1-sol",
+            instructions="write accurately",
+            input_text="job",
+            schema=ExampleResult,
+            max_output_tokens=12_000,
+        )
+
+    assert raised.value.__cause__ is stream_error
+    assert raised.value.usage == AIUsage(output_tokens=12_000)
+
+
+def test_max_output_token_response_is_converted_to_retryable_error():
+    response = SimpleNamespace(
+        usage=SimpleNamespace(
+            input_tokens=100,
+            output_tokens=12_000,
+            input_tokens_details=SimpleNamespace(cached_tokens=0, cache_write_tokens=0),
+        ),
+        output_parsed=None,
+        incomplete_details=SimpleNamespace(reason="max_output_tokens"),
+        status="incomplete",
+    )
+    provider = OpenAIProvider.__new__(OpenAIProvider)
+    provider._client = SimpleNamespace(
+        responses=SimpleNamespace(stream=lambda **_request: RecordingStream(response))
+    )
+
+    with pytest.raises(AIIncompleteOutputError, match="token limit") as raised:
+        provider.structured(
+            model="gpt-6.1-sol",
+            instructions="write accurately",
+            input_text="job",
+            schema=ExampleResult,
+            max_output_tokens=12_000,
+        )
+
+    assert raised.value.usage == AIUsage(100, 12_000, 0, 0)
