@@ -8,7 +8,7 @@ import pytest
 from docx import Document as DocxDocument
 from sqlalchemy import select, update
 
-from resumeflow.db.models import Application, Job, ProcessingJob
+from resumeflow.db.models import Application, ProcessingJob
 from resumeflow.devtools.sample_data import SAMPLE_CANDIDATES, SAMPLE_JOBS
 from resumeflow.domain.enums import ProcessingStatus
 from resumeflow.services.ai.provider import AIError, TransientAIError
@@ -196,13 +196,15 @@ def test_export_never_overwrites(client, setup):
     assert (folder / "001_Acme_Data_Co_Resume_v2.docx").exists()
 
 
-def test_url_less_export_uses_the_same_numbered_profile_folder(client, setup, db):
-    job = db.get(Job, setup["job"]["id"])
-    job.job_url = ""
-    job.normalized_url = ""
-    db.commit()
+def test_url_less_export_uses_the_same_numbered_profile_folder(client, setup):
+    job = client.post(
+        "/jobs",
+        json={"raw_jd": SAMPLE_JOBS[0]["text"], "company": SAMPLE_JOBS[0]["company"], "title": SAMPLE_JOBS[0]["title"]},
+    )
+    assert job.status_code == 201
+    url_less_setup = {**setup, "job": job.json()}
 
-    app = generated_app(client, setup)
+    app = generated_app(client, url_less_setup)
     client.post(f"/applications/{app['id']}/approve", json={})
     client.post(f"/applications/{app['id']}/export")
     drain(client)
