@@ -284,6 +284,7 @@ def _tailoring(other_employer: str):
                 ]},
             ],
             "placements": [],
+            "new_bullets": [],
         }
 
     return handler
@@ -305,8 +306,8 @@ def test_ai_documents_are_saved_as_written_without_a_checking_step(client, setup
     assert not [c for c in fake_ai.calls if c["schema"] == "AIClaimReview"]
     assert resume["issue_counts"]["error"] == 0
     assert not [i for i in resume["issues"] if i["code"] in ("auto_fixed", "ai_unsupported_claim")]
-    # A bullet can still only come from the candidate's own roles: one citing an id that doesn't exist is left out.
-    assert all("quantum" not in b["text"] for r in content["experience"] for b in r["bullets"])
+    # The writer's bullets are kept as written, even one citing an id that doesn't exist.
+    assert any("quantum" in b["text"] for r in content["experience"] for b in r["bullets"])
 
     # Candidate isolation in prompts: nothing about other candidates is sent.
     generation_inputs = " ".join(c["input"] for c in fake_ai.calls if c["schema"] in {"AIResumeTailoring", "AICoverLetter"})

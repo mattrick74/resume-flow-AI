@@ -10,13 +10,15 @@ import json
 import re
 import textwrap
 from pathlib import Path
+from types import SimpleNamespace
 
 import pymupdf
 import pytest
 
 from resumeflow.devtools.sample_data import SampleCandidate, SampleRole, resume_docx_bytes
-from resumeflow.domain.content import AISkillPlacement
+from resumeflow.domain.content import AIResumeTailoring, AISkillPlacement
 from resumeflow.domain.requirements import JobRequirements, empty_requirements
+from resumeflow.services.generation import ai_resume
 from resumeflow.services.inference import (
     check_proposed_bullet,
     expand_snapshot,
@@ -346,6 +348,7 @@ def _tailoring(text: str) -> dict:
         ],
     }
     result["placements"] = _expansion(text)["placements"]
+    result["new_bullets"] = []
     return result
 
 
@@ -479,3 +482,40 @@ def test_ai_alone_never_adds_a_skill():
     assert not result.get("inferred_skills") and "Terraform" not in json.dumps(result["employment"])
     assert {r["normalized"]: r["status"] for r in result["skill_gap_report"]}["terraform"] == "transferable"
     assert any("Terraform was not added" in n for n in notes)
+
+
+def test_new_bullets_for_missing_skills_are_inserted_under_the_chosen_employer():
+    snap = _snap(("Acme", ["Built REST APIs in Python for order processing", "Maintained PostgreSQL schemas"]), ("Globex", ["Wrote internal tools in Python"]))
+
+    def bullet(skill: str, employer: str, text: str, ids: tuple[str, ...] = ()) -> dict:
+        return {"skill": skill, "employer_id": employer, "text": text, "based_on_ids": list(ids)}
+
+    reply = AIResumeTailoring.model_validate({
+        "headline": None,
+        "summary": "Backend engineer.",
+        "skill_order": ["Python"],
+        "roles": [
+            {"role_id": "R-r0", "bullets": [{"text": "Built REST APIs in Python for order processing", "source_bullet_ids": ["B-r0b0"]}]},
+            {"role_id": "R-r1", "bullets": [{"text": "Wrote internal tools in Python", "source_bullet_ids": ["B-r1b0"]}]},
+        ],
+        "placements": [],
+        "new_bullets": [
+            bullet("Apache Kafka", "R-r0", "Built event-driven order pipelines on Apache Kafka", ("B-r0b0", "B-r1b0")),
+            bullet("Terraform", "R-r1", "Provisioned internal tool environments with Terraform"),
+            bullet("Apache Kafka", "R-r1", "Streamed tool events through Apache Kafka"),  # one bullet per skill
+            bullet("Go", "R-r9", "Wrote services in Go"),  # not one of the candidate's employers
+        ],
+    })
+    ai = SimpleNamespace(run=lambda **_: reply)
+    req = _req("Python", "Apache Kafka", "Terraform", "Go")
+
+    resume, *_ = ai_resume(ai, snap, req, "Initech", "job", "app", None, "all")
+    acme, globex = ({b.text: b.source_ids for b in role.bullets} for role in resume.experience)
+    assert list(acme) == ["Built REST APIs in Python for order processing", "Built event-driven order pipelines on Apache Kafka"]
+    assert acme["Built event-driven order pipelines on Apache Kafka"] == ["r0b0"]  # only that employer's own bullets are cited
+    assert list(globex) == ["Wrote internal tools in Python", "Provisioned internal tool environments with Terraform"]
+    assert {"Apache Kafka", "Terraform"} <= set(resume.skills) and "Go" not in resume.skills
+
+    # A skill the operator said the candidate hasn't used never gets a bullet.
+    resume, *_ = ai_resume(ai, snap, req, "Initech", "job", "app", None, "all", exclude=frozenset({"terraform"}))
+    assert "Terraform" not in json.dumps(resume.model_dump()["experience"])

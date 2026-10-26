@@ -87,6 +87,15 @@ class AISkillPlacement(BaseModel):
     reason: str
 
 
+class AINewBullet(BaseModel):
+    """A new bullet for a JD skill no employer's bullets show yet, written for the employer where it fits best."""
+
+    skill: str = Field(description="The JD skill this bullet demonstrates, exactly as the job writes it")
+    employer_id: str = Field(description="The R-... id of the employer where this work fits best")
+    text: str = Field(description="One new accomplishment bullet for that employer that names the skill")
+    based_on_ids: list[str] = Field(description="B-... ids of that employer's bullets this builds on; empty if none")
+
+
 class AIResumeTailoring(BaseModel):
     headline: str | None
     summary: str
@@ -94,6 +103,9 @@ class AIResumeTailoring(BaseModel):
     roles: list[AITailoredRole]
     placements: list[AISkillPlacement] = Field(
         description="One evidence-based placement decision for every skill in <missing_job_skills>"
+    )
+    new_bullets: list[AINewBullet] = Field(
+        description="One new bullet for each important skill in <missing_job_skills>, under its best-fit employer"
     )
 
 

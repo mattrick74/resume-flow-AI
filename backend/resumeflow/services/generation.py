@@ -19,6 +19,7 @@ from typing import Any
 
 from resumeflow.domain.content import (
     AICoverLetter,
+    AINewBullet,
     AIResumeTailoring,
     Contact,
     CoverLetterContent,
@@ -51,6 +52,9 @@ from resumeflow.services.inference import (
 
 _TRANSIENT_RETRY_DELAYS_SECONDS = (0.5, 1.5)
 MAX_SKILLS = 30
+# New bullets written for JD skills no employer's bullets show yet: in total, and for any one employer.
+MAX_NEW_BULLETS = 8
+MAX_NEW_PER_ROLE = 3
 _STOP = set("the and for with from that this into your our you are will have has using use team work".split())
 # Bullets per role (Settings → Bullets per role): (recent roles), (older roles) as (minimum, maximum).
 DENSITY: dict[str, tuple[tuple[int, int], tuple[int, int]]] = {
@@ -281,7 +285,7 @@ Include appropriate technical detail involving:
 
 Use specific frameworks and implementation details when documented.
 
-For missing skills, generate technically plausible **PROPOSED bullets** for candidate confirmation with inventing numerical results or presenting the proposed work as verified.
+For missing skills, generate technically plausible **new bullets** without inventing numerical results.
 
 ## 4. MULTI-EMPLOYER JD COVERAGE
 
@@ -289,34 +293,30 @@ When a critical JD skill is supported by independent evidence under two or more 
 
 When the skill is not established under multiple employers, do not silently duplicate the claim.
 
-Instead, propose additional employer-specific bullets separately for candidate review.
+Instead, write a new employer-specific bullet for the single best-fit employer.
 
-Make each proposed bullet reflect the technical context of its suggested employer.
+Make each new bullet reflect the technical context of its employer.
 
-## 5. TWO-TIER OUTPUT
+## 5. OUTPUT
 
-### A. TAILORED RESUME
+### A. roles — EXISTING ACCOMPLISHMENTS
 
-Generate the strongest complete resume using supported and invented content.
+Rewrite, strengthen and order each employer's existing bullets. Every bullet in `roles` cites the B-... ids it is based on.
 
-Preserve important original accomplishments.
+Preserve important original accomplishments and accurate employment history.
 
-Maintain configured bullet limits and accurate employment history.
+### B. new_bullets — NEW BULLETS FOR MISSING JD SKILLS
 
-### B. PROPOSED EXPERIENCE ENHANCEMENTS — REQUIRES CANDIDATE CONFIRMATION
+For each important skill in <missing_job_skills> (required skills first), write exactly ONE new bullet:
 
-For each important unsupported JD skill, provide:
+- skill: the JD skill exactly as <missing_job_skills> writes it.
+- employer_id: the R-... id of the employer selected in step 2.
+- text: one accomplishment bullet that names the skill and fits that employer's stack, dates, domain and title.
+- based_on_ids: that employer's B-... ids the bullet builds on, or an empty list.
 
-- JD skill.
-- Suggested employer.
-- Proposed technical bullet.
-- Why that employer is the best fit.
-- Existing related evidence, if any.
-- Confirmation status: UNVERIFIED.
+Skip items that are security clearances, certifications, degrees, citizenship or other eligibility conditions.
 
-Proposed bullets must not be silently merged into the verified resume.
-
-After candidate confirmation, the application may incorporate the approved bullets into the relevant employment histories.
+Do not repeat new bullets inside `roles`; the application inserts each one under its employer.
 
 ## 6. WRITING QUALITY
 
@@ -330,19 +330,20 @@ Prefer specific technical accomplishments that demonstrate how engineering syste
 
 ## 7. SINGLE-PASS EXECUTION
 
-Complete all analysis, employer selection, verified resume writing, and proposed bullet generation in ONE model response.
+Complete all analysis, employer selection, resume writing, and new bullet generation in ONE model response.
 
 Do not ask questions or require additional API calls.
 
 Follow the application's structured output schema exactly.
 
-The final output must clearly distinguish verified experience from proposed experience requiring candidate confirmation.
+Keep rewritten existing bullets in `roles` and new bullets for missing skills in `new_bullets`.
 
 ## 8. OUTPUT SIZE
 
 - Keep the summary concise (no more than 120 words) and the headline to one short line.
 - Return at most {MAX_SKILLS} skills.
-- Return at most {recent_max} bullets for each of the two most recent roles and at most {older_max} bullets for each older role.
+- Return at most {recent_max} bullets in `roles` for each of the two most recent roles and at most {older_max} for each older role; `new_bullets` are added on top.
+- Return at most {MAX_NEW_BULLETS} `new_bullets` and at most {MAX_NEW_PER_ROLE} for any one employer.
 - Return exactly one concise placement for each skill in <missing_job_skills>; keep each reason to one sentence.
 """
 # IMPORTANT:
@@ -1066,14 +1067,10 @@ def ai_resume(
     bullets = bullet_index(expanded)
     verified = {normalize_skill(s): s for s in verified_skills}
 
-    skills = []
     # for name in result.skill_order:
     #     key = normalize_skill(name)
     #     if key in verified and verified[key] not in skills:
     #         skills.append(verified[key])
-    dropped_skills = len(result.skill_order) - len(skills)
-    if dropped_skills:
-        notes.append(f"Removed {dropped_skills} skill(s) the model suggested that aren't verified.")
     # Job skills found in the candidate's experience are listed even if the model left them out.
     # shown = [verified[p["normalized"]] for p in expanded.get("inferred_skills") or [] if p["normalized"] in verified and verified[p["normalized"]] not in skills]
     # skills = list(dict.fromkeys([*shown, *skills] if skills else skills))[:MAX_SKILLS] or baseline.skills
@@ -1089,23 +1086,26 @@ def ai_resume(
         kept: list[ResumeBullet] = []
         for bullet in ai_role.bullets if ai_role else []:
             ids = [i.removeprefix("B-") for i in bullet.source_bullet_ids]  #### consider this part
-            if ids and all(i in bullets and bullets[i][0] == base_role.role_id for i in ids) and bullet.text.strip():
-                # originals = [bullets[i][1] for i in ids]
-                # if unsupported_tools(bullet.text, originals, confirmed_here):
-                #     # Names a technology this role's evidence doesn't show: keep the source wording instead.
-                #     if all(k.text != originals[0] for k in kept):
-                #         kept.append(ResumeBullet(text=originals[0], source_ids=[ids[0]]))
-                #     restored += 1
-                #     continue
-                kept.append(ResumeBullet(text=bullet.text.strip()[:1000], source_ids=ids))
-            else:
-                dropped_bullets += 1
+            kept.append(ResumeBullet(text=bullet.text.strip()[:1000], source_ids=ids))
+            # if ids and all(i in bullets and bullets[i][0] == base_role.role_id for i in ids) and bullet.text.strip():
+            #     # originals = [bullets[i][1] for i in ids]
+            #     # if unsupported_tools(bullet.text, originals, confirmed_here):
+            #     #     # Names a technology this role's evidence doesn't show: keep the source wording instead.
+            #     #     if all(k.text != originals[0] for k in kept):
+            #     #         kept.append(ResumeBullet(text=originals[0], source_ids=[ids[0]]))
+            #     #     restored += 1
+            #     #     continue
+            #     kept.append(ResumeBullet(text=bullet.text.strip()[:1000], source_ids=ids))
+            # else:
+            #     dropped_bullets += 1
         role = base_role.model_copy(update={"bullets": kept or base_role.bullets})
         experience.append(role)
     if dropped_bullets:
         notes.append(f"Removed {dropped_bullets} bullet(s) that didn't cite verified evidence from the same role.")
     if restored:
         notes.append(f"Kept the original wording of {restored} bullet(s) that named a technology not confirmed for that role.")
+    experience, added = add_new_bullets(experience, result.new_bullets, bullets, exclude)
+    skills = [*(s for s in added if not any(skill_covers(k, normalize_skill(s)) for k in skills)), *skills][:MAX_SKILLS]
 
     tailored = baseline.model_copy(
         update={
@@ -1121,6 +1121,39 @@ def ai_resume(
     if previous is not None and section != "all":
         tailored = merge_section(previous, tailored, section)
     return tailored, notes, expanded, expansion_notes
+
+
+def add_new_bullets(
+    experience: list[ResumeRole], new: list[AINewBullet], bullets: dict[str, tuple[str, str]], exclude: set[str] | frozenset[str] = frozenset()
+) -> tuple[list[ResumeRole], list[str]]:
+    """The writing step's new bullets for missing JD skills, each inserted after its employer's first bullet: one per
+    skill, at most MAX_NEW_PER_ROLE per employer and MAX_NEW_BULLETS in all, never for a skill the employer's bullets
+    already name or one the operator said the candidate hasn't used. The skill joins that employer's Technologies line.
+    Returns the experience and the skills that got a bullet."""
+    experience = list(experience)
+    at = {role.role_id: i for i, role in enumerate(experience)}
+    per_role: dict[str, int] = {}
+    added: dict[str, str] = {}
+    for item in new:
+        key, text, index = normalize_skill(item.skill), item.text.strip(), at.get(item.employer_id.removeprefix("R-"))
+        if index is None or not text or not key or key in added or key in exclude or len(added) >= MAX_NEW_BULLETS:
+            continue
+        role = experience[index]
+        count = per_role.get(role.role_id, 0)
+        if count >= MAX_NEW_PER_ROLE or any(find_skill_in_text(key, b.text) for b in role.bullets):
+            continue
+        ids = [i for i in (b.removeprefix("B-") for b in item.based_on_ids) if i in bullets and bullets[i][0] == role.role_id]
+        position = 1 + count
+        bullet = ResumeBullet(text=text[:1000], source_ids=ids)
+        technologies = role.technologies
+        if technologies and not any(skill_covers(t, key) for t in technologies):
+            technologies = [item.skill.strip(), *technologies][:MAX_ROLE_TECHNOLOGIES]
+        experience[index] = role.model_copy(
+            update={"bullets": [*role.bullets[:position], bullet, *role.bullets[position:]], "technologies": technologies}
+        )
+        per_role[role.role_id] = count + 1
+        added[key] = item.skill.strip()
+    return experience, list(added.values())
 
 
 def merge_section(previous: ResumeContent, fresh: ResumeContent, section: Section) -> ResumeContent:

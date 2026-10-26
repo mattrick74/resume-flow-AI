@@ -269,6 +269,7 @@ def test_ai_drafts_from_the_description(client, avery, secret_store, fake_ai):
                 ]},
             ],
             "placements": [],
+            "new_bullets": [],
         }
 
     fake_ai.on("AIResumeTailoring", tailoring)

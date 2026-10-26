@@ -1,6 +1,6 @@
 [package]
 name = "resumeflow-desktop"
-version = "1.8.5"
+version = "1.8.6"
 description = "ResumeFlow AI desktop shell"
 edition = "2021"
 rust-version = "1.90"
