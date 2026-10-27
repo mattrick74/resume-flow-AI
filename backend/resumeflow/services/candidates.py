@@ -253,6 +253,7 @@ def candidate_detail(db: Session, candidate: Candidate) -> dict[str, Any]:
         "profile_revision": candidate.profile_revision,
         "profile_reviewed_at": candidate.profile_reviewed_at,
         "consent_confirmed_at": candidate.consent_confirmed_at,
+        "answer_notes": candidate.answer_notes or "",
         "newer_extraction_available": bool(latest and profile.source_version_id and profile.source_version_id != latest.id),
         "applications": application_count or 0,
         "readiness": readiness(candidate, usable_skills, require_verification=require),
@@ -539,6 +540,8 @@ def update_candidate(db: Session, candidate: Candidate, changes: dict[str, Any])
         candidate.preferences_json = CandidatePreferences.model_validate(changes["preferences"]).model_dump(mode="json")
     if "consent_confirmed" in changes and changes["consent_confirmed"] is not None:
         candidate.consent_confirmed_at = _now() if changes["consent_confirmed"] else None
+    if "answer_notes" in changes:
+        candidate.answer_notes = (changes["answer_notes"] or "").strip() or None
     candidate.updated_at = _now()
     db.commit()
 

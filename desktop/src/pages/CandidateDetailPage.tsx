@@ -1,8 +1,9 @@
-import { Archive, ArchiveRestore, ArrowLeft, BadgeCheck, BadgePlus, Briefcase, FileStack, GraduationCap, ListChecks, Pencil, Trash2, Upload, UserRound } from "lucide-react";
+import { Archive, ArchiveRestore, ArrowLeft, BadgeCheck, BadgePlus, Briefcase, FileStack, GraduationCap, ListChecks, NotebookPen, Pencil, Trash2, Upload, UserRound } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Link, useNavigate, useParams, useSearchParams } from "react-router";
 import { toast } from "sonner";
 
+import { AnswerNotesPanel } from "@/components/candidates/AnswerNotesPanel";
 import { ReadinessBadge } from "@/components/candidates/CandidateBadges";
 import { CredentialsPanel } from "@/components/candidates/CredentialsPanel";
 import { ExperienceEditor } from "@/components/candidates/ExperienceEditor";
@@ -219,6 +220,9 @@ function CandidateView({ candidate }: { candidate: CandidateDetail }) {
           <TabsTrigger value="versions">
             <FileStack /> Resume versions
           </TabsTrigger>
+          <TabsTrigger value="answer-notes">
+            <NotebookPen /> Notes for answers
+          </TabsTrigger>
         </TabsList>
         <TabsContent value="experience">
           <ExperienceEditor roles={draft.profile.employment} onChange={(employment) => setProfile({ employment })} />
@@ -242,6 +246,9 @@ function CandidateView({ candidate }: { candidate: CandidateDetail }) {
         </TabsContent>
         <TabsContent value="versions">
           <VersionsPanel candidate={candidate} />
+        </TabsContent>
+        <TabsContent value="answer-notes">
+          <AnswerNotesPanel candidate={candidate} />
         </TabsContent>
       </Tabs>
 

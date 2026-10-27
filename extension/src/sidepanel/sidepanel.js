@@ -1,8 +1,10 @@
-// The side panel next to the job page (requirements 5): capture → save & rank → generate → answer questions →
-// confirmation screen. Backend calls go through the service worker. Page data is shown with textContent only.
+// The side panel next to the job page (requirements 5): capture → save & rank (or save for later) → generate → answer
+// questions → confirmation screen. Backend calls go through the service worker. Page data is shown with textContent only.
+// One side panel serves every tab of the window, so what each tab showed is kept per tab and put back on return.
 
 const $ = (id) => document.getElementById(id);
 const DONE = new Set(["EXPORTED", "SUBMITTED", "INTERVIEW", "OFFER", "REJECTED", "FAILED"]);
+const ACTIVE = new Set(["queued", "running"]);
 const STATUS_LABEL = {
   MATCHED: "Queued",
   GENERATING: "Writing",
@@ -17,7 +19,23 @@ const STATUS_LABEL = {
   FAILED: "Failed",
 };
 
-const state = { tab: null, connected: false, capture: null, job: null, application: null, poll: null, fieldLabels: {} };
+const state = {
+  tab: null,
+  connected: false,
+  capture: null,
+  job: null,
+  jobBusy: false,
+  application: null,
+  poll: null,
+  fieldLabels: {},
+  needs: [],
+  sameUrl: null,
+  note: null,
+  // Each tab switch starts a new load; answers that arrive for an earlier one are dropped.
+  seq: 0,
+  // False while a tab's panel is being put back, so a half-restored panel is never saved as that tab's.
+  ready: false,
+};
 
 async function send(type, payload = {}) {
   const response = await chrome.runtime.sendMessage({ type, ...payload });
@@ -29,6 +47,7 @@ async function send(type, payload = {}) {
   return response.data;
 }
 const api = (method, path, body) => send("api", { method, path, body });
+const openWorkspace = (hash) => send("openWorkspace", { hash }).catch((e) => message(e.message));
 
 function el(tag, props = {}, ...children) {
   const node = document.createElement(tag);
@@ -50,6 +69,8 @@ function message(text, kind = "error") {
   box.textContent = text || "";
   box.className = kind === "info" ? "message info" : "message";
   box.hidden = !text;
+  state.note = text ? { text, kind } : null;
+  remember();
 }
 
 async function busy(button, task) {
@@ -65,6 +86,7 @@ async function busy(button, task) {
     button.disabled = false;
     button.textContent = label;
     updateButtons();
+    remember();
   }
 }
 
@@ -100,29 +122,117 @@ function updateButtons() {
   $("capture").disabled = !ready;
   $("answer").disabled = !(ready && state.application);
   $("capture-now").disabled = !(ready && state.application);
+  $("generate-one").disabled = $("rank-now").disabled = !(ready && state.job) || state.jobBusy;
+  $("generate-saved").disabled = !state.connected;
+}
+
+// ---------------------------------------------------------------- what each tab showed
+
+const panelKey = (tabId) => `panel:${tabId}`;
+const panels = new Map(); // tab id -> snapshot; also kept in session storage for when the panel is reopened
+let rememberTimer = null;
+
+function snapshot() {
+  const value = (id) => $(id).value;
+  const drafts = Object.fromEntries([...$("needs-list").querySelectorAll("input[data-field]")].map((i) => [i.dataset.field, { value: i.value, saved: i.disabled }]));
+  return {
+    captured: !$("captured").hidden,
+    capture: state.capture,
+    form: { title: value("job-title"), company: value("job-company"), location: value("job-location"), url: value("job-url"), description: value("job-description") },
+    sameUrl: state.sameUrl,
+    candidate: document.querySelector("input[name='candidate']:checked")?.value || null,
+    overrideReason: value("override-reason"),
+    answers: $("answers").hidden ? null : { summary: $("answers-summary").textContent, needs: state.needs, fieldLabels: state.fieldLabels, drafts },
+    note: state.note,
+  };
+}
+
+function rememberNow() {
+  clearTimeout(rememberTimer);
+  rememberTimer = null;
+  if (!state.tab || !state.ready) return;
+  const tabId = state.tab.id;
+  const snap = snapshot();
+  panels.set(tabId, snap);
+  chrome.storage.session.set({ [panelKey(tabId)]: snap }).catch(() => {});
+}
+
+function remember() {
+  clearTimeout(rememberTimer);
+  rememberTimer = setTimeout(rememberNow, 300);
+}
+
+async function rememberedPanel(tabId) {
+  if (panels.has(tabId)) return panels.get(tabId);
+  return (await chrome.storage.session.get(panelKey(tabId)))[panelKey(tabId)] || null;
+}
+
+/** Puts back what the user had on this tab that the backend doesn't hold: an unsaved capture, a chosen candidate, form answers. */
+function applySnapshot(snap) {
+  if (snap.captured && snap.form) {
+    state.capture = snap.capture || null;
+    $("job-title").value = snap.form.title || "";
+    $("job-company").value = snap.form.company || "";
+    $("job-location").value = snap.form.location || "";
+    $("job-url").value = snap.form.url || "";
+    $("job-description").value = snap.form.description || "";
+    $("read-by").textContent = snap.capture?.read_by ? `read from ${snap.capture.read_by}` : "";
+    onDescriptionInput();
+    show("captured");
+    renderSameUrl(snap.sameUrl);
+  }
+  if (snap.candidate && !$("candidates").hidden) {
+    const input = document.getElementById(`candidate-${snap.candidate}`);
+    if (input) input.checked = true;
+    $("override-reason").value = snap.overrideReason || "";
+    onCandidateChange();
+  }
+  if (snap.answers && state.application) {
+    state.fieldLabels = snap.answers.fieldLabels || {};
+    $("answers-summary").textContent = snap.answers.summary || "";
+    renderNeeds(snap.answers.needs || [], snap.answers.drafts || {});
+    show("answers");
+  }
+  // An error stays until dealt with; an info note ("Saved for later.") is out of date by the time the user is back.
+  if (snap.note?.text && snap.note.kind !== "info") message(snap.note.text, snap.note.kind);
 }
 
 // ---------------------------------------------------------------- the active tab
 
-async function loadTab() {
+async function loadTab(force = false) {
   const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
   const changed = tab?.id !== state.tab?.id;
+  if (changed || force) rememberNow(); // what the previous tab showed, before it's cleared
   state.tab = tab || null;
   $("tab-title").textContent = tab ? tab.title || tab.url : "No tab";
-  if (!changed) return;
+  if (!changed && !force) return;
+  const seq = ++state.seq;
+  state.ready = false;
   stopPolling();
-  state.capture = state.job = state.application = null;
-  ["captured", "candidates", "application", "answers"].forEach((id) => show(id, false));
+  state.capture = state.job = state.application = state.sameUrl = null;
+  state.jobBusy = false;
+  state.needs = [];
+  state.fieldLabels = {};
+  $("override-reason").value = "";
+  ["captured", "saved-job", "candidates", "application", "answers"].forEach((id) => show(id, false));
   message("");
-  if (!tab || !state.connected) return updateButtons();
-  try {
-    const linked = await send("tabState", { tabId: tab.id });
-    if (linked?.applicationId) await loadApplication(linked.applicationId);
-    else if (linked?.jobId) await loadJob(linked.jobId);
-  } catch (error) {
-    message(error.message);
+  if (!tab || !state.connected) {
+    state.ready = true;
+    return updateButtons();
   }
-  await loadApplicationChoices();
+  try {
+    const [linked, snap] = await Promise.all([send("tabState", { tabId: tab.id }), rememberedPanel(tab.id)]);
+    if (seq !== state.seq) return;
+    if (linked?.applicationId) await loadApplication(linked.applicationId, seq);
+    else if (linked?.jobId) await loadJob(linked.jobId, seq);
+    if (seq !== state.seq) return;
+    if (snap) applySnapshot(snap);
+  } catch (error) {
+    if (seq === state.seq) message(error.message);
+  } finally {
+    if (seq === state.seq) state.ready = true;
+  }
+  await Promise.all([loadApplicationChoices(), refreshSaved()]);
   updateButtons();
 }
 
@@ -168,15 +278,14 @@ function onDescriptionInput() {
 }
 
 async function showSameUrl(url) {
-  const box = $("same-url");
-  box.replaceChildren();
-  show("same-url", false);
+  renderSameUrl(null);
   if (!url) return;
   const { same_url: earlier } = await api("GET", `/jobs/by-url?url=${encodeURIComponent(url)}`);
   renderSameUrl(earlier);
 }
 
 function renderSameUrl(earlier) {
+  state.sameUrl = earlier || null;
   const box = $("same-url");
   box.replaceChildren();
   const apps = (earlier || []).flatMap((job) => job.applications.map((a) => ({ ...a, job })));
@@ -195,13 +304,13 @@ function renderSameUrl(earlier) {
   show("same-url");
 }
 
-async function saveJob() {
+/** The captured job as the user checked it. */
+function jobBody() {
   const description = $("job-description").value.trim();
   if (description.length < 50) throw new Error("Capture or paste the full job description first.");
-  const url = $("job-url").value.trim();
-  const job = await api("POST", "/jobs", {
+  return {
     raw_jd: description,
-    job_url: url,
+    job_url: $("job-url").value.trim(),
     title: $("job-title").value.trim() || null,
     company: $("job-company").value.trim() || null,
     location: $("job-location").value.trim() || null,
@@ -209,20 +318,76 @@ async function saveJob() {
     source: "extension",
     site: state.capture?.site || null,
     page_title: state.capture?.page_title || null,
-    analyze: true,
-  });
+  };
+}
+
+async function saveJob() {
+  const job = await api("POST", "/jobs", { ...jobBody(), analyze: true });
   await send("linkTab", { tabId: state.tab.id, jobId: job.id });
   showJob(job);
   renderSameUrl(job.same_url);
 }
 
-async function loadJob(jobId) {
-  showJob(await api("GET", `/jobs/${jobId}`));
+/** Saved without analysis or ranking: generated later on its own, or with every saved job. */
+async function saveLater() {
+  const job = await api("POST", "/jobs", { ...jobBody(), analyze: false });
+  await send("linkTab", { tabId: state.tab.id, jobId: job.id });
+  showSavedJob(job);
+  await refreshSaved();
+  message("Saved for later.", "info");
+}
+
+async function loadJob(jobId, seq = state.seq) {
+  const job = await api("GET", `/jobs/${jobId}`);
+  if (seq !== state.seq) return;
+  const latest = job.applications?.[0]; // newest first
+  if (latest) {
+    // Generated since it was saved (for example with all saved jobs): show its application.
+    await send("linkTab", { tabId: state.tab.id, applicationId: latest.id, jobId: job.id });
+    return loadApplication(latest.id, seq);
+  }
+  if (ACTIVE.has(job.processing?.status) || !job.requirements_source) return showSavedJob(job, seq);
+  showJob(job);
+  if (job.processing?.status === "failed" && job.processing.error) message(job.processing.error);
+}
+
+function showSavedJob(job, seq = state.seq) {
+  state.job = job;
+  stopPolling();
+  const active = ACTIVE.has(job.processing?.status);
+  state.jobBusy = active;
+  show("captured", false);
+  show("candidates", false);
+  $("saved-job-title").textContent = [job.title, job.company].filter(Boolean).join(" · ") || job.job_url || "Job";
+  $("saved-job-state").textContent = active
+    ? `Generating in the background${job.processing.progress ? ` · ${job.processing.progress}%` : ""}…`
+    : job.processing?.status === "failed"
+      ? `Generation failed: ${job.processing.error || "unknown error"}. Try again, or choose the candidate yourself.`
+      : "Generate it now on its own, or later together with every saved job.";
+  show("saved-job");
+  updateButtons();
+  if (active) state.poll = setTimeout(() => loadJob(job.id, seq).catch((e) => message(e.message)), 2000);
+}
+
+/** This job alone, in the background: analysis, ranking, and the resume and cover letter for the top candidate. */
+async function generateOne() {
+  const result = await api("POST", "/jobs/process", { job_ids: [state.job.id] });
+  if (!result.queued.length) throw new Error(result.skipped[0]?.reason || "This job couldn't be queued.");
+  await loadJob(state.job.id);
+  await refreshSaved();
+}
+
+/** Analyze and rank now, to choose the candidate yourself. */
+async function rankNow() {
+  showJob(await api("POST", `/jobs/${state.job.id}/match`));
+  await refreshSaved();
 }
 
 function showJob(job) {
   state.job = job;
+  state.jobBusy = false;
   show("captured", false);
+  show("saved-job", false);
   $("analysis-source").textContent = job.requirements_source ? `analyzed: ${job.requirements_source === "heuristic" ? "locally" : job.requirements_source}` : "";
   const warnings = $("job-warnings");
   warnings.replaceChildren(...(job.warnings || []).map((w) => el("p", { class: "note small" }, w.message)));
@@ -252,6 +417,7 @@ function showJob(job) {
   $("generate").disabled = !matches.length;
   onCandidateChange();
   show("candidates");
+  updateButtons();
 }
 
 function selectedMatch() {
@@ -276,6 +442,28 @@ async function generate() {
   await loadApplicationChoices();
 }
 
+// ---------------------------------------------------------------- saved for later
+
+async function refreshSaved() {
+  if (!state.connected) return show("saved-jobs", false);
+  try {
+    const count = (await api("GET", "/dashboard/summary")).saved_jobs || 0;
+    $("saved-count").textContent = `${count} saved job${count === 1 ? "" : "s"} waiting to be generated.`;
+    show("saved-jobs", count > 0);
+  } catch {
+    show("saved-jobs", false);
+  }
+}
+
+/** Every saved job at once, in the background: each is ranked and its files are saved as it finishes. */
+async function generateAllSaved() {
+  const result = await api("POST", "/jobs/process", { all_saved: true });
+  const count = result.queued.length;
+  message(`${count} saved job${count === 1 ? "" : "s"} queued. Each gets its resume and cover letter as it finishes; follow them in the workspace.`, "info");
+  if (state.job && result.queued.includes(state.job.id)) await loadJob(state.job.id);
+  await refreshSaved();
+}
+
 // ---------------------------------------------------------------- the application
 
 async function useApplication(applicationId) {
@@ -290,13 +478,16 @@ async function useApplication(applicationId) {
   await loadApplication(applicationId);
 }
 
-async function loadApplication(applicationId) {
+async function loadApplication(applicationId, seq = state.seq) {
   const app = await api("GET", `/applications/${applicationId}`);
+  if (seq !== state.seq) return;
   state.application = app;
+  state.jobBusy = false;
+  show("saved-job", false);
   renderApplication(app);
   $("application-select").value = app.id;
   stopPolling();
-  if (!DONE.has(app.status)) state.poll = setTimeout(() => loadApplication(applicationId).catch((e) => message(e.message)), 1500);
+  if (!DONE.has(app.status)) state.poll = setTimeout(() => loadApplication(applicationId, seq).catch((e) => message(e.message)), 1500);
   updateButtons();
 }
 
@@ -391,17 +582,20 @@ async function answerQuestions() {
   show("answers");
 }
 
-function renderNeeds(needs) {
+function renderNeeds(needs, drafts = {}) {
+  state.needs = needs;
   const list = $("needs-list");
   list.replaceChildren();
   if (!needs.length) list.append(el("p", { class: "muted small" }, "Every field was filled. Check them, then submit on the page."));
   for (const answer of needs) {
     const label = state.fieldLabels[answer.field_id] || answer.field_id;
-    const input = el("input", { placeholder: "Your answer (saved for next time)", maxlength: "5000" });
+    const draft = drafts[answer.field_id];
+    const input = el("input", { placeholder: "Your answer (saved for next time)", maxlength: "5000", "data-field": answer.field_id, value: draft?.value || null, disabled: draft?.saved });
     const save = el(
       "button",
       {
         type: "button",
+        disabled: draft?.saved,
         onclick: async () => {
           if (!input.value.trim()) return;
           save.disabled = true;
@@ -409,16 +603,18 @@ function renderNeeds(needs) {
             await api("PUT", "/answer-bank", { candidate_id: state.application.candidate_id, question: label, answer: input.value.trim() });
             save.textContent = "Saved";
             input.disabled = true;
+            remember();
           } catch (error) {
             save.disabled = false;
             message(error.message);
           }
         },
       },
-      "Save",
+      draft?.saved ? "Saved" : "Save",
     );
     list.append(el("div", { class: "item" }, el("strong", { class: "small" }, label), answer.note ? el("span", { class: "muted small" }, answer.note) : null, el("div", { class: "row" }, input, save)));
   }
+  remember();
 }
 
 async function captureNow() {
@@ -432,22 +628,33 @@ async function captureNow() {
 // ---------------------------------------------------------------- wiring
 
 $("open-options").addEventListener("click", () => chrome.runtime.openOptionsPage());
-$("retry-status").addEventListener("click", () => refreshStatus().then(loadTab));
-$("open-workspace").addEventListener("click", () => send("openWorkspace", { hash: state.application ? `/applications/${state.application.id}` : "/" }).catch((e) => message(e.message)));
+$("retry-status").addEventListener("click", () => refreshStatus().then(() => loadTab(true)));
+$("open-workspace").addEventListener("click", () => openWorkspace(state.application ? `/applications/${state.application.id}` : "/"));
 $("capture").addEventListener("click", (e) => busy(e.currentTarget, capture));
 $("save-job").addEventListener("click", (e) => busy(e.currentTarget, saveJob));
+$("save-later").addEventListener("click", (e) => busy(e.currentTarget, saveLater));
+$("generate-one").addEventListener("click", (e) => busy(e.currentTarget, generateOne));
+$("rank-now").addEventListener("click", (e) => busy(e.currentTarget, rankNow));
+$("generate-saved").addEventListener("click", (e) => busy(e.currentTarget, generateAllSaved));
+$("view-saved").addEventListener("click", () => openWorkspace("/jobs"));
 $("generate").addEventListener("click", (e) => busy(e.currentTarget, generate));
 $("answer").addEventListener("click", (e) => busy(e.currentTarget, answerQuestions));
 $("capture-now").addEventListener("click", (e) => busy(e.currentTarget, captureNow));
+$("edit-notes").addEventListener("click", () => state.application && openWorkspace(`/candidates/${state.application.candidate_id}?tab=answer-notes`));
 $("job-description").addEventListener("input", onDescriptionInput);
 $("application-select").addEventListener("change", (e) => useApplication(e.target.value).catch((error) => message(error.message)));
+// Typing in the captured job, the override reason or an answer is kept for this tab.
+$("app").addEventListener("input", remember);
+$("app").addEventListener("change", remember);
+document.addEventListener("visibilitychange", () => document.visibilityState === "hidden" && rememberNow());
 
 chrome.tabs.onActivated.addListener(() => loadTab());
 chrome.tabs.onUpdated.addListener((tabId, info) => {
   if (tabId === state.tab?.id && (info.title || info.url)) $("tab-title").textContent = info.title || state.tab.title || info.url;
 });
+chrome.tabs.onRemoved.addListener((tabId) => panels.delete(tabId));
 chrome.runtime.onMessage.addListener((msg) => {
   if (msg?.type === "submission-captured" && msg.applicationId === state.application?.id) loadApplication(msg.applicationId).catch(() => {});
 });
 
-refreshStatus().then(loadTab);
+refreshStatus().then(() => loadTab());

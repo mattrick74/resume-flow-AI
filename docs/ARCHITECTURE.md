@@ -294,6 +294,17 @@ candidate's work: every new fact comes from the operator (`services/experience.p
   role dates); answer bank; free-text questions → one `QUESTION_ANSWERING` request (analysis model, `AIFormAnswers`) for the
   page, reusing earlier answers to the same question; anything else → `needs_input`. Choices only from the page's options
   (`choose_option`, numeric ranges). Stored in `application_answers` and written to `Answers.json`.
+  **Candidate notes** (`candidates.answer_notes`, migration 0011, `PATCH /candidates/{id} {answer_notes}`, ≤ 20,000
+  characters, desktop *Notes for answers* tab): free text the user keeps for application questions. When present it goes
+  into that same request as `<candidate_notes>`, and the page's short and choice questions the profile and answer bank
+  don't cover (text, number, date, select, radio, email, tel, url; never checkboxes, EEO or consent) are asked too, with
+  their options and `"short": true`. Resume and cover-letter generation never read the notes.
+- **Side panel per tab:** one panel serves every tab of a window. On a tab switch it saves what the old tab showed that the
+  backend doesn't hold (unsaved capture and edits, chosen candidate and reason, form answers and typed drafts, an error) in
+  `chrome.storage.session` under `panel:<tabId>`, and puts it back on return after reloading the tab's linked job or
+  application; loads for an earlier tab are dropped (`seq`). *Save for later* posts the job with `analyze: false`; the tab
+  then offers *Generate now* (`POST /jobs/process {job_ids}`) or *Choose candidate* (`POST /jobs/{id}/match`), and the
+  *Saved jobs* card runs `POST /jobs/process {all_saved: true}` (count from `/dashboard/summary`).
 - **Submission (BE-10, `services/submission.py`):** `POST /applications/{id}/submission` (multipart PNG ≤ 15 MB) saves
   `Submission_<date>_<time>.png` in the application folder (document type `submission_screenshot`, format `png`), updates
   metadata.json (`submission`) and records SUBMITTED (operator action; while the export is still running it is applied when

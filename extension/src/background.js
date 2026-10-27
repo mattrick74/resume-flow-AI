@@ -22,7 +22,8 @@ async function setTabState(tabId, patch) {
   return next;
 }
 
-chrome.tabs.onRemoved.addListener((tabId) => chrome.storage.session.remove(tabKey(tabId)));
+// The tab's link, and what the side panel showed on it (kept by the panel under panel:<id>).
+chrome.tabs.onRemoved.addListener((tabId) => chrome.storage.session.remove([tabKey(tabId), `panel:${tabId}`]));
 
 // ---------------------------------------------------------------- page scripts
 

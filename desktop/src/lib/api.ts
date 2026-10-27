@@ -114,6 +114,8 @@ export interface CandidateUpdate {
   profile?: CandidateProfile;
   preferences?: CandidatePreferences;
   consent_confirmed?: boolean;
+  /** v2.0: notes for answering application questions ("" clears them). */
+  answer_notes?: string;
 }
 
 export interface JobCreate {

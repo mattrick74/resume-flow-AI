@@ -40,6 +40,15 @@
         <p id="page-message" class="message" role="alert" hidden></p>
       </section>
 
+      <section id="saved-jobs" class="card" hidden>
+        <div class="section-head">
+          <h2>Saved jobs</h2>
+          <button id="view-saved" type="button" class="link">View list</button>
+        </div>
+        <p id="saved-count" class="muted"></p>
+        <div class="row"><button id="generate-saved" type="button">Generate all saved</button></div>
+      </section>
+
       <section id="captured" class="card" hidden>
         <div class="section-head">
           <h2>Captured job</h2>
@@ -54,7 +63,22 @@
           <textarea id="job-description" rows="9" maxlength="100000"></textarea>
         </label>
         <p id="jd-warning" class="message" hidden>The description looks short. Select the job description on the page and capture again.</p>
-        <div class="row"><button id="save-job" type="button" class="primary">Save &amp; rank candidates</button></div>
+        <div class="row">
+          <button id="save-job" type="button" class="primary">Save &amp; rank candidates</button>
+          <button id="save-later" type="button" title="Save the job only; generate it later on its own or with every saved job">Save for later</button>
+        </div>
+      </section>
+
+      <section id="saved-job" class="card" hidden>
+        <div class="section-head">
+          <h2>Saved for later</h2>
+        </div>
+        <p id="saved-job-title"></p>
+        <p id="saved-job-state" class="muted small"></p>
+        <div class="row">
+          <button id="generate-one" type="button" class="primary" title="Rank candidates and write the resume and cover letter for the best match, in the background">Generate now</button>
+          <button id="rank-now" type="button">Choose candidate</button>
+        </div>
       </section>
 
       <section id="candidates" class="card" hidden>
@@ -87,7 +111,10 @@
           <h2>Form answers</h2>
           <span id="answers-summary" class="muted small"></span>
         </div>
-        <p class="muted small">Review every answer before you submit. Fields outlined in amber need you.</p>
+        <p class="muted small">
+          Review every answer before you submit. Fields outlined in amber need you. What the resume can't answer, add to the candidate's
+          <button id="edit-notes" type="button" class="link">notes for answers</button>.
+        </p>
         <div id="needs-list" class="list"></div>
       </section>
     </main>

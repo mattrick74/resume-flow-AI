@@ -103,6 +103,9 @@ class Candidate(TimestampMixin, Base):
     consent_confirmed_at: Mapped[datetime | None] = mapped_column(UTCDateTime)
     # Incremented whenever confirmed experience is approved, edited or removed (v1.8 provenance).
     profile_revision: Mapped[int] = mapped_column(Integer, default=0, server_default="0", nullable=False)
+    # v2.0: free text the user keeps for answering application questions (preferences, availability, salary, the
+    # stories behind projects). Read only by the question-answering request; never used in resumes or cover letters.
+    answer_notes: Mapped[str | None] = mapped_column(Text)
 
 
 class ResumeVersion(Base):

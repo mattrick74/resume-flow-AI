@@ -324,6 +324,8 @@ export interface CandidateDetail {
   resume_versions: ResumeVersionInfo[];
   profile_reviewed_at: string | null;
   consent_confirmed_at: string | null;
+  /** v2.0: notes the AI reads when answering application questions (never used in resumes). */
+  answer_notes?: string;
   newer_extraction_available: boolean;
   applications: number;
   readiness: Readiness;

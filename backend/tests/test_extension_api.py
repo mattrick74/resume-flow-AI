@@ -181,6 +181,59 @@ def test_a_custom_question_saved_to_the_answer_bank_is_reused(client, setup):
     assert client.delete(f"/answer-bank/{saved['id']}").status_code == 204
 
 
+def test_candidate_notes_let_the_ai_answer_what_the_resume_cannot(client, setup, secret_store, fake_ai):
+    app = create(client, setup).json()
+    drain(client)
+    secret_store.set("openai_api_key", "sk-test-key-123456")
+    candidate_id = setup["candidates"]["Avery Quinlan"]
+    notes = "Salary: 145-160k base. Open to relocating to Austin. Ran a 3-node Kubernetes home lab since 2021."
+    detail = client.patch(f"/candidates/{candidate_id}", json={"answer_notes": f"  {notes}\n"}).json()
+    assert detail["answer_notes"] == notes  # kept with the candidate, not in the profile used for resumes
+    assert "home lab" not in json.dumps(detail["profile"])
+
+    fields = [
+        {"field_id": "relocate", "label": "Are you willing to relocate?", "type": "radio", "options": ["Yes", "No"]},
+        {"field_id": "salary", "label": "Desired salary", "type": "text"},
+        {"field_id": "k8s", "label": "Do you have 3+ years of experience with Kubernetes?", "type": "radio", "options": ["Yes", "No"]},
+        {"field_id": "snack", "label": "Favorite office snack", "type": "text"},
+        {"field_id": "gender", "label": "Gender", "type": "select", "options": ["Male", "Female", "I decline to self-identify"]},
+        {"field_id": "consent", "label": "I certify that the information provided is true and complete", "type": "checkbox"},
+        {"field_id": "why", "label": "Why do you want to work at Acme Data Co?", "type": "textarea"},
+    ]
+    fake_ai.on(
+        "AIFormAnswers",
+        lambda text: {
+            "answers": [
+                {"field_id": "relocate", "answer": "Yes"},
+                {"field_id": "salary", "answer": "145,000-160,000"},
+                {"field_id": "k8s", "answer": "Yes"},
+                {"field_id": "snack", "answer": ""},
+                {"field_id": "why", "answer": "Your data platform work is what I do every day."},
+            ]
+        },
+    )
+    result = client.post(f"/applications/{app['id']}/answers", json={"fields": fields}).json()
+    answers = {a["field_id"]: a for a in result["answers"]}
+    calls = [c for c in fake_ai.calls if c["schema"] == "AIFormAnswers"]
+    assert len(calls) == 1  # still one request for the page (QA-05)
+    sent = calls[0]["input"]
+    assert "<candidate_notes>" in sent and "home lab" in sent
+    questions = sent.split("<questions>")[1]
+    assert '"short": true' in questions and '"options": ["Yes", "No"]' in questions
+    assert "Gender" not in questions and "certify" not in questions  # QA-02 and QA-03 never reach the AI
+    assert answers["relocate"] == {**answers["relocate"], "value": "Yes", "source": "ai"}
+    assert answers["salary"]["value"] == "145,000-160,000"
+    assert answers["k8s"]["value"] == "Yes"  # shown by the notes, not the resume
+    assert answers["snack"]["source"] == "needs_input" and "your notes" in answers["snack"]["note"]
+    assert answers["gender"]["value"] == "I decline to self-identify" and answers["consent"]["source"] == "needs_input"
+    assert answers["why"]["source"] == "ai"
+
+    # Cleared notes: short questions are left for the user again, without asking the AI.
+    client.patch(f"/candidates/{candidate_id}", json={"answer_notes": ""})
+    again = client.post(f"/applications/{app['id']}/answers", json={"fields": fields[:3]}).json()
+    assert {a["source"] for a in again["answers"]} == {"needs_input"} and again["ai_request"] is False
+
+
 # ---------------------------------------------------------------- the confirmation screen (BE-10)
 
 

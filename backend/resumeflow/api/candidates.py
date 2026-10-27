@@ -57,6 +57,8 @@ class CandidateUpdate(BaseModel):
     profile: CandidateProfile | None = None
     preferences: CandidatePreferences | None = None
     consent_confirmed: bool | None = None
+    # v2.0: notes for answering application questions ("" clears them).
+    answer_notes: str | None = Field(default=None, max_length=20_000)
 
 
 class SkillCreate(BaseModel):
