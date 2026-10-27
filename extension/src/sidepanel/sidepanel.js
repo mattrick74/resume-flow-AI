@@ -31,6 +31,7 @@ const state = {
   needs: [],
   sameUrl: null,
   note: null,
+  recentApps: [], // the last 25 applications, for the choice list and the apply-page suggestion
   // Each tab switch starts a new load; answers that arrive for an earlier one are dropped.
   seq: 0,
   // False while a tab's panel is being put back, so a half-restored panel is never saved as that tab's.
@@ -214,7 +215,7 @@ async function loadTab(force = false) {
   state.needs = [];
   state.fieldLabels = {};
   $("override-reason").value = "";
-  ["captured", "saved-job", "candidates", "application", "answers"].forEach((id) => show(id, false));
+  ["captured", "saved-job", "candidates", "application", "answers", "suggest"].forEach((id) => show(id, false));
   message("");
   if (!tab || !state.connected) {
     state.ready = true;
@@ -223,25 +224,30 @@ async function loadTab(force = false) {
   try {
     const [linked, snap] = await Promise.all([send("tabState", { tabId: tab.id }), rememberedPanel(tab.id)]);
     if (seq !== state.seq) return;
+    $("auto-answer").checked = linked?.autoAnswer !== false;
     if (linked?.applicationId) await loadApplication(linked.applicationId, seq);
     else if (linked?.jobId) await loadJob(linked.jobId, seq);
     if (seq !== state.seq) return;
     if (snap) applySnapshot(snap);
+    else if (linked?.openedFrom && linked.applicationId) message("Opened from the job page: this tab uses the same application.", "info");
   } catch (error) {
     if (seq === state.seq) message(error.message);
   } finally {
     if (seq === state.seq) state.ready = true;
   }
   await Promise.all([loadApplicationChoices(), refreshSaved()]);
+  if (seq === state.seq) suggestApplication();
   updateButtons();
 }
 
 async function loadApplicationChoices() {
   const select = $("application-select");
   select.replaceChildren(el("option", { value: "" }, "—"));
+  state.recentApps = [];
   if (!state.connected) return;
   try {
     const apps = await api("GET", "/applications?limit=25");
+    state.recentApps = apps;
     for (const app of apps) {
       const date = String(app.application_date || "").slice(5);
       select.append(el("option", { value: app.id }, `${date} · ${app.candidate_name} · ${app.company || app.title || "Job"}`));
@@ -569,17 +575,59 @@ async function download(applicationId, file) {
 
 // ---------------------------------------------------------------- answering the form
 
+/** The service worker reads the visible fields, gets the answers and fills them; from then on it also answers each new
+ * step of the form on this site by itself (form-answered messages below). */
 async function answerQuestions() {
   await allowSites();
-  const fields = await send("scanForm", { tabId: state.tab.id });
-  if (!fields.length) throw new Error("No form fields found on this page. Open the application form and try again.");
-  state.fieldLabels = Object.fromEntries(fields.map((f) => [f.field_id, f.label || f.placeholder || f.name || "Field"]));
-  const result = await api("POST", `/applications/${state.application.id}/answers`, { page_url: state.tab.url, fields });
-  const summary = await send("fillForm", { tabId: state.tab.id, applicationId: state.application.id, answers: result.answers });
-  const parts = [`${summary.filled} filled`, summary.attached ? `${summary.attached} file${summary.attached > 1 ? "s" : ""} attached` : null, `${summary.needs + summary.failed} for you`];
-  $("answers-summary").textContent = parts.filter(Boolean).join(" · ") + (result.ai_request ? " · 1 AI request" : "");
-  renderNeeds(result.answers.filter((a) => a.source === "needs_input"));
+  renderAnswered(await send("answerForm", { tabId: state.tab.id, applicationId: state.application.id }));
+  $("auto-answer").checked = (await send("tabState", { tabId: state.tab.id }))?.autoAnswer !== false;
+}
+
+function answersSummary(result) {
+  const s = result.summary;
+  const parts = [`${s.filled} filled`, s.kept ? `${s.kept} kept` : null, s.attached ? `${s.attached} file${s.attached > 1 ? "s" : ""} attached` : null, `${s.needs + s.failed} for you`];
+  return (result.auto ? "Next step: " : "") + parts.filter(Boolean).join(" · ") + (result.aiRequest ? " · 1 AI request" : "");
+}
+
+function renderAnswered(result) {
+  state.fieldLabels = { ...state.fieldLabels, ...result.labels };
+  $("answers-summary").textContent = answersSummary(result);
+  renderNeeds(result.needs);
   show("answers");
+}
+
+/** A step answered on a tab the panel isn't showing: what the panel shows when the user is back there. */
+function rememberAnswers(tabId, result) {
+  const snap = panels.get(tabId);
+  if (!snap) return;
+  snap.answers = { summary: answersSummary(result), needs: result.needs, fieldLabels: { ...(snap.answers?.fieldLabels || {}), ...result.labels }, drafts: {} };
+  chrome.storage.session.set({ [panelKey(tabId)]: snap }).catch(() => {});
+}
+
+// ---------------------------------------------------------------- an apply page in a tab of its own
+
+const CLOSED = new Set(["SUBMITTED", "INTERVIEW", "OFFER", "REJECTED", "FAILED"]);
+const COMPANY_FILLER = new Set(["inc", "llc", "ltd", "corp", "corporation", "company", "the", "group", "holdings", "technologies", "technology", "solutions", "services", "systems", "global", "international", "labs"]);
+
+/** "Acme Data Co" -> ["acmedata", "acme"]: matched against the page address and title with everything else removed. */
+function companyKeys(name) {
+  const words = (name || "").toLowerCase().normalize("NFKD").replace(/[^a-z0-9 ]+/g, " ").split(/\s+/).filter((w) => w.length >= 3 && !COMPANY_FILLER.has(w));
+  return words.length ? [words.join(""), ...(words[0].length >= 4 ? [words[0]] : [])] : [];
+}
+
+/** A tab with nothing linked whose address or title names the company of a recent open application (the company's
+ * own careers site, Workday, Greenhouse...): offer that application. */
+function suggestApplication() {
+  const box = $("suggest");
+  box.replaceChildren();
+  show("suggest", false);
+  if (!state.tab || state.application || state.job || !$("captured").hidden) return;
+  const page = `${state.tab.url || ""} ${state.tab.title || ""}`.toLowerCase().replace(/[^a-z0-9]+/g, "");
+  const app = state.recentApps.find((a) => !CLOSED.has(a.status) && companyKeys(a.company).some((key) => page.includes(key)));
+  if (!app) return;
+  const use = () => useApplication(app.id).then(() => show("suggest", false), (error) => message(error.message));
+  box.append(el("span", {}, `Applying to ${app.company}? `), el("button", { type: "button", class: "link", onclick: use }, `Use ${app.candidate_name}'s application`));
+  show("suggest");
 }
 
 function renderNeeds(needs, drafts = {}) {
@@ -655,6 +703,11 @@ chrome.tabs.onUpdated.addListener((tabId, info) => {
 chrome.tabs.onRemoved.addListener((tabId) => panels.delete(tabId));
 chrome.runtime.onMessage.addListener((msg) => {
   if (msg?.type === "submission-captured" && msg.applicationId === state.application?.id) loadApplication(msg.applicationId).catch(() => {});
+  if (msg?.type === "form-answered") {
+    if (msg.tabId === state.tab?.id && msg.applicationId === state.application?.id) renderAnswered(msg);
+    else rememberAnswers(msg.tabId, msg);
+  }
 });
+$("auto-answer").addEventListener("change", (e) => state.tab && send("setAutoAnswer", { tabId: state.tab.id, on: e.target.checked }).catch((error) => message(error.message)));
 
 refreshStatus().then(() => loadTab());

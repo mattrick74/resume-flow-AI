@@ -4,6 +4,12 @@
   if (globalThis.__resumeflowForm) return;
 
   const ATTR = "data-resumeflow-id";
+  const SELECTOR = "input, textarea, select, [contenteditable='true'], [role='textbox']";
+  // Ids stay unique for the life of the page: the steps of a multi-step form often keep earlier steps in the page, hidden,
+  // and a reused id would fill the hidden field instead of the visible one.
+  const LOAD = Math.random().toString(36).slice(2, 6);
+  let counter = 0;
+  const nextId = () => `rf-${LOAD}-${++counter}`;
   const CONSENT = /\bi (?:hereby )?(?:certify|attest|acknowledge|agree|understand|confirm|consent|authori[sz]e)\b|\bconsent\b|terms (?:and|&) conditions|terms of (?:use|service)|privacy (?:policy|notice)|background (?:check|screening)|\bsignature\b|true and (?:complete|correct|accurate)|\bagree\b/i;
   const SKIP_TYPES = new Set(["hidden", "submit", "button", "image", "reset", "password", "search"]);
   const CAPTCHA = /captcha|recaptcha|hcaptcha|turnstile/i;
@@ -102,47 +108,58 @@
     return "text";
   }
 
-  function scan() {
-    const fields = [];
-    const radiosSeen = new Set();
-    let counter = 0;
+  /** The fields the user can see and fill now: the current step of a multi-step form. */
+  function fieldElements() {
+    const found = [];
     for (const root of allRoots()) {
-      for (const element of root.querySelectorAll("input, textarea, select, [contenteditable='true'], [role='textbox']")) {
+      for (const element of root.querySelectorAll(SELECTOR)) {
         const type = (element.type || "").toLowerCase();
         if (SKIP_TYPES.has(type) || element.disabled || element.readOnly || !visible(element)) continue;
         if (CAPTCHA.test(`${element.name} ${element.id} ${element.className}`)) continue;
-        const kind = fieldType(element);
-        if (kind === "radio") {
-          const key = `${element.form ? "f" : "d"}:${element.name}`;
-          if (!element.name || radiosSeen.has(key)) continue;
-          radiosSeen.add(key);
-          const group = [...(element.form || element.getRootNode()).querySelectorAll(`input[type='radio'][name="${CSS.escape(element.name)}"]`)];
-          const id = `rf-${++counter}`;
-          group.forEach((radio) => radio.setAttribute(ATTR, id));
-          fields.push({
-            field_id: id,
-            label: groupLabel(element),
-            type: "radio",
-            options: group.map(optionLabel).filter(Boolean),
-            required: group.some((r) => r.required || r.getAttribute("aria-required") === "true"),
-            name: element.name,
-          });
-          continue;
-        }
-        const id = element.getAttribute(ATTR) || `rf-${++counter}`;
-        element.setAttribute(ATTR, id);
-        const label = labelFor(element);
+        found.push(element);
+      }
+    }
+    return found;
+  }
+
+  function scan() {
+    const fields = [];
+    const radiosSeen = new Set();
+    for (const element of fieldElements()) {
+      const kind = fieldType(element);
+      if (kind === "radio") {
+        const key = `${element.form ? "f" : "d"}:${element.name}`;
+        if (!element.name) element.setAttribute(ATTR, "rf-none"); // seen, so the step watcher doesn't wait on it
+        if (!element.name || radiosSeen.has(key)) continue;
+        radiosSeen.add(key);
+        const group = [...(element.form || element.getRootNode()).querySelectorAll(`input[type='radio'][name="${CSS.escape(element.name)}"]`)];
+        const id = group.map((radio) => radio.getAttribute(ATTR)).find(Boolean) || nextId();
+        group.forEach((radio) => radio.setAttribute(ATTR, id));
         fields.push({
           field_id: id,
-          label,
-          type: kind,
-          options: kind === "select" ? [...element.options].map((o) => clean(o.text)).filter((t) => t && !/^(select|choose|please select|--)/i.test(t)) : [],
-          required: Boolean(element.required || element.getAttribute("aria-required") === "true" || /\*\s*$/.test(label)),
-          max_length: element.maxLength > 0 ? element.maxLength : null,
-          name: element.name || element.id || null,
-          placeholder: element.getAttribute("placeholder") || null,
+          label: groupLabel(element),
+          type: "radio",
+          options: group.map(optionLabel).filter(Boolean),
+          required: group.some((r) => r.required || r.getAttribute("aria-required") === "true"),
+          name: element.name,
+          filled: hasValue(group),
         });
+        continue;
       }
+      const id = element.getAttribute(ATTR) || nextId();
+      element.setAttribute(ATTR, id);
+      const label = labelFor(element);
+      fields.push({
+        field_id: id,
+        label,
+        type: kind,
+        options: kind === "select" ? [...element.options].map((o) => clean(o.text)).filter((t) => t && !/^(select|choose|please select|--)/i.test(t)) : [],
+        required: Boolean(element.required || element.getAttribute("aria-required") === "true" || /\*\s*$/.test(label)),
+        max_length: element.maxLength > 0 ? element.maxLength : null,
+        name: element.name || element.id || null,
+        placeholder: element.getAttribute("placeholder") || null,
+        filled: hasValue([element]),
+      });
     }
     return fields;
   }
@@ -213,11 +230,28 @@
     return element.value === value || element.value.length > 0;
   }
 
-  function fill(answers) {
-    const result = { filled: 0, needs: 0, failed: 0 };
+  /** The field already has an answer: typed by the user, restored by the site, or filled earlier. */
+  function hasValue(elements) {
+    const element = elements[0];
+    const type = fieldType(element);
+    if (type === "radio") return elements.some((radio) => radio.checked);
+    if (type === "checkbox") return element.checked;
+    if (type === "select") return element.selectedIndex > 0 && Boolean(element.value);
+    if (type === "contenteditable") return Boolean(clean(element.textContent));
+    if (type === "file") return element.files?.length > 0;
+    return Boolean(element.value);
+  }
+
+  /** keepFilled (automatic answers for a new step): fields that already have a value are left as they are. */
+  function fill(answers, { keepFilled = false } = {}) {
+    const result = { filled: 0, needs: 0, failed: 0, kept: 0 };
     for (const answer of answers) {
       const elements = find(answer.field_id);
       if (!elements.length) continue;
+      if (keepFilled && hasValue(elements)) {
+        result.kept += 1;
+        continue;
+      }
       if (answer.value === null || answer.value === undefined || answer.source === "needs_input") {
         mark(elements, "needs", answer.note || "Needs your answer");
         result.needs += 1;
@@ -236,11 +270,11 @@
   }
 
   /** Puts the generated PDF into file inputs, where the site accepts a programmatic file (EXT-10). */
-  function attach(items) {
+  function attach(items, { keepFilled = false } = {}) {
     const result = { attached: 0, failed: 0 };
     for (const item of items) {
       const [input] = find(item.field_id);
-      if (!input || input.type !== "file") continue;
+      if (!input || input.type !== "file" || (keepFilled && input.files?.length)) continue;
       try {
         const bytes = Uint8Array.from(atob(item.base64), (c) => c.charCodeAt(0));
         const transfer = new DataTransfer();
@@ -259,5 +293,34 @@
     return result;
   }
 
-  globalThis.__resumeflowForm = { scan, fill, attach, labelFor, CONSENT };
+  let stepWatch = null;
+
+  /** After the first answers on this page: reports when fields appear that haven't been read yet (the next step or tab
+   * of a multi-step form, or a follow-up question), so the service worker answers them too. Stops after 30 minutes. */
+  function watchSteps() {
+    if (stepWatch) return;
+    let timer = null;
+    const check = () => {
+      timer = null;
+      if (!fieldElements().some((element) => !element.getAttribute(ATTR))) return;
+      try {
+        chrome.runtime.sendMessage({ type: "form-step", url: location.href })?.catch?.(() => {});
+      } catch {
+        // the extension was reloaded; this page's script is orphaned
+      }
+    };
+    const observer = new MutationObserver(() => {
+      clearTimeout(timer);
+      timer = setTimeout(check, 800);
+    });
+    // Steps appear as new elements, or as hidden ones shown (style, class, hidden, aria-hidden).
+    observer.observe(document.documentElement, { childList: true, subtree: true, attributes: true, attributeFilter: ["style", "class", "hidden", "aria-hidden"] });
+    stepWatch = observer;
+    setTimeout(() => {
+      observer.disconnect();
+      stepWatch = null;
+    }, 30 * 60_000);
+  }
+
+  globalThis.__resumeflowForm = { scan, fill, attach, watchSteps, labelFor, CONSENT };
 })();

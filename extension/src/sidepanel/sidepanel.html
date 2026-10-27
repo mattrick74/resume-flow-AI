@@ -37,6 +37,7 @@
           Application for this tab
           <select id="application-select"><option value="">—</option></select>
         </label>
+        <div id="suggest" class="note small" hidden></div>
         <p id="page-message" class="message" role="alert" hidden></p>
       </section>
 
@@ -115,6 +116,9 @@
           Review every answer before you submit. Fields outlined in amber need you. What the resume can't answer, add to the candidate's
           <button id="edit-notes" type="button" class="link">notes for answers</button>.
         </p>
+        <label class="inline small" title="The next step or tab of this form, a follow-up question, or the next page on this site: empty fields only">
+          <input id="auto-answer" type="checkbox" checked /> Answer each new step of this form automatically
+        </label>
         <div id="needs-list" class="list"></div>
       </section>
     </main>

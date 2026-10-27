@@ -294,11 +294,28 @@ candidate's work: every new fact comes from the operator (`services/experience.p
   role dates); answer bank; free-text questions → one `QUESTION_ANSWERING` request (analysis model, `AIFormAnswers`) for the
   page, reusing earlier answers to the same question; anything else → `needs_input`. Choices only from the page's options
   (`choose_option`, numeric ranges). Stored in `application_answers` and written to `Answers.json`.
+  **Tailored resume first:** the application's latest structured resume (the one exported and attached) is read too.
+  Skill and years-of questions count its roles and Skills (`resume_skill_years`, `resume_shows_skill`; source `resume`,
+  the larger of resume and profile years). The AI request gets it as `<tailored_resume>` (with role dates) and is told to
+  base every answer on it and never contradict it, using `<candidate_evidence>` and notes only for what it doesn't cover.
+  Short and choice questions nothing else answered go to that request too; personal ones (answer-bank keys) and contact
+  fields only with notes. A question the AI couldn't answer (`AI_DECLINED`) isn't asked again for the application until
+  the candidate (notes, profile) or the resume changes.
   **Candidate notes** (`candidates.answer_notes`, migration 0011, `PATCH /candidates/{id} {answer_notes}`, ≤ 20,000
   characters, desktop *Notes for answers* tab): free text the user keeps for application questions. When present it goes
   into that same request as `<candidate_notes>`, and the page's short and choice questions the profile and answer bank
   don't cover (text, number, date, select, radio, email, tel, url; never checkboxes, EEO or consent) are asked too, with
   their options and `"short": true`. Resume and cover-letter generation never read the notes.
+- **Multi-step forms and apply pages elsewhere:** `answerForm` in the service worker scans the visible fields (`form.js`;
+  field ids `rf-<load>-<n>` stay unique for the page, so a hidden earlier step never receives a later step's answer),
+  posts them, fills them and starts `watchSteps` (a MutationObserver per frame that sends `form-step` when visible fields
+  appear that were never read). The service worker then answers again by itself (`scheduleAutoAnswer`, debounced, at
+  most 30 runs per page load) on the same host only, including after a page load, posting only empty fields
+  (`filled` from the scan) and filling with `keepFilled`; results reach the panel as `form-answered`. Tab state keeps
+  `autoAnswer` (unset → on at the first answers, false when turned off or after the confirmation is captured) and
+  `answerHost`. `watch.js` ignores Next/Continue/Save/Review buttons (also via `SubmitEvent.submitter`). A tab opened
+  from a linked tab (`openerTabId`) inherits its job and application; an unlinked tab whose address or title contains a
+  recent open application's company (`companyKeys`) gets a one-click suggestion.
 - **Side panel per tab:** one panel serves every tab of a window. On a tab switch it saves what the old tab showed that the
   backend doesn't hold (unsaved capture and edits, chosen candidate and reason, form answers and typed drafts, an error) in
   `chrome.storage.session` under `panel:<tabId>`, and puts it back on return after reloading the tab's linked job or

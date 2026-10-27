@@ -6,6 +6,9 @@
     /thank(?:s| you) for (?:applying|your application|your interest and application)|(?:your )?application (?:has been |was )?(?:submitted|received|sent|complete)|we(?:'ve| have) received your application|you(?:'ve| have) (?:successfully )?applied|successfully (?:submitted|applied)|application sent|we received your application/i;
   const CONFIRM_PATH = /(confirmation|thank-?you|thanks|applied|success|submitted|complete)/i;
   const SUBMIT_TEXT = /\b(submit|apply|send application|finish|complete application)\b/i;
+  // The step buttons of a multi-step form are often submit buttons too; moving to the next step isn't submitting.
+  const STEP_TEXT = /^(?:next|continue|save (?:and|&) continue|save|back|previous|review|add(?: another)?|upload)\b/i;
+  const buttonText = (button) => `${button.innerText || button.textContent || ""} ${button.value || ""} ${button.getAttribute("aria-label") || ""}`.trim();
   const WATCH_MS = 120_000;
 
   function looksConfirmed(doc = document, href = location.href) {
@@ -60,12 +63,20 @@
     (event) => {
       const button = event.target?.closest?.("button, input[type='submit'], input[type='button'], a[role='button'], [role='button']");
       if (!button) return;
-      const text = `${button.innerText || ""} ${button.value || ""} ${button.getAttribute("aria-label") || ""}`;
+      const text = buttonText(button);
+      if (STEP_TEXT.test(text)) return;
       if (button.type === "submit" || SUBMIT_TEXT.test(text)) submitted();
     },
     true,
   );
-  document.addEventListener("submit", submitted, true);
+  document.addEventListener(
+    "submit",
+    (event) => {
+      if (event.submitter && STEP_TEXT.test(buttonText(event.submitter))) return;
+      submitted();
+    },
+    true,
+  );
 
   globalThis.__resumeflowWatch = {
     /** armed: the user clicked Submit on the previous page of this tab within the last 2 minutes. */

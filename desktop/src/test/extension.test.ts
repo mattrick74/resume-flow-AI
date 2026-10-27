@@ -11,7 +11,11 @@ type Capture = {
 type Field = { field_id: string; label: string; type: string; options: string[]; required: boolean; max_length: number | null };
 type Form = {
   scan(): Field[];
-  fill(answers: { field_id: string; value: string | null; source: string; note?: string }[]): { filled: number; needs: number; failed: number };
+  fill(
+    answers: { field_id: string; value: string | null; source: string; note?: string }[],
+    options?: { keepFilled?: boolean },
+  ): { filled: number; needs: number; failed: number; kept: number };
+  watchSteps(): void;
 };
 type Watch = { looksConfirmed(doc?: Document, href?: string): boolean };
 
@@ -137,8 +141,52 @@ describe("reading and filling an application form", () => {
     expect((document.getElementById("g") as HTMLSelectElement).value).toBe("d");
     expect((document.getElementById("why") as HTMLTextAreaElement).value).toBe("I build reliable data pipelines.");
     expect((document.getElementById("certify") as HTMLInputElement).checked).toBe(false);
-    expect(result).toEqual({ filled: 4, needs: 1, failed: 1 });
+    expect(result).toEqual({ filled: 4, needs: 1, failed: 1, kept: 0 });
     expect(document.getElementById("em")!.title).toContain("Not in the profile");
+  });
+
+  it("fills the next step of a multi-step form in its own fields, not the hidden earlier step", () => {
+    document.body.innerHTML = `<form><label for="a">First Name</label><input id="a" /></form>`;
+    const [first] = g.__resumeflowForm.scan();
+    // Step 2: step 1 stays in the page, hidden; a new field appears.
+    document.getElementById("a")!.style.display = "none";
+    document.querySelector("form")!.insertAdjacentHTML("beforeend", `<label for="b">Years of experience</label><input id="b" />`);
+    const step2 = g.__resumeflowForm.scan();
+    expect(step2.map((f) => f.label)).toEqual(["Years of experience"]); // only what the user can see
+    expect(step2[0].field_id).not.toBe(first.field_id);
+    g.__resumeflowForm.fill([{ field_id: step2[0].field_id, value: "9", source: "resume" }]);
+    expect((document.getElementById("b") as HTMLInputElement).value).toBe("9");
+    expect((document.getElementById("a") as HTMLInputElement).value).toBe("");
+  });
+
+  it("keeps what is already in a field when a new step is answered automatically", () => {
+    document.body.innerHTML = `<label for="a">First Name</label><input id="a" value="Ave" /><label for="b">City</label><input id="b" />`;
+    const fields = g.__resumeflowForm.scan() as (Field & { filled: boolean })[];
+    expect(fields.map((f) => f.filled)).toEqual([true, false]); // automatic answers only ask about the empty one
+    const answers = fields.map((f) => ({ field_id: f.field_id, value: f.label === "First Name" ? "Avery" : "Austin", source: "profile" }));
+    const result = g.__resumeflowForm.fill(answers, { keepFilled: true });
+    expect((document.getElementById("a") as HTMLInputElement).value).toBe("Ave");
+    expect((document.getElementById("b") as HTMLInputElement).value).toBe("Austin");
+    expect(result).toMatchObject({ filled: 1, kept: 1 });
+  });
+
+  it("reports a new step once its fields appear, and nothing for fields already read", async () => {
+    vi.useFakeTimers();
+    try {
+      document.body.innerHTML = `<label for="a">First Name</label><input id="a" />`;
+      g.__resumeflowForm.scan();
+      g.__resumeflowForm.watchSteps();
+      document.getElementById("a")!.style.outline = "2px solid green"; // ResumeFlow's own marking
+      await Promise.resolve();
+      vi.advanceTimersByTime(1000);
+      expect(sendMessage).not.toHaveBeenCalled();
+      document.body.insertAdjacentHTML("beforeend", `<label for="q">Why do you want to join?</label><textarea id="q"></textarea>`);
+      await Promise.resolve();
+      vi.advanceTimersByTime(1000);
+      expect(sendMessage).toHaveBeenCalledWith(expect.objectContaining({ type: "form-step" }));
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });
 
@@ -158,5 +206,12 @@ describe("recognizing the confirmation page", () => {
     document.querySelector("form")!.addEventListener("submit", (event) => event.preventDefault());
     (document.querySelector("button[type='submit']") as HTMLButtonElement).click();
     expect(sendMessage).toHaveBeenCalledWith(expect.objectContaining({ type: "submit-clicked" }));
+  });
+
+  it("doesn't take the Next button of a multi-step form for Submit", () => {
+    document.body.innerHTML = `<form><label for="x">City</label><input id="x" /><button type="submit">Next</button></form>`;
+    document.querySelector("form")!.addEventListener("submit", (event) => event.preventDefault());
+    (document.querySelector("button[type='submit']") as HTMLButtonElement).click();
+    expect(sendMessage).not.toHaveBeenCalledWith(expect.objectContaining({ type: "submit-clicked" }));
   });
 });

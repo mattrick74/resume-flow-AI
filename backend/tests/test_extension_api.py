@@ -139,15 +139,19 @@ def test_questions_are_answered_from_the_profile_and_answer_bank_with_one_ai_req
     assert answers["gender"]["value"] == "I decline to self-identify"  # QA-02: no saved answer, decline offered
     assert answers["veteran"]["source"] == "needs_input"  # no decline option offered: left for the user
     assert answers["consent"]["source"] == "needs_input" and answers["consent"]["value"] is None  # QA-03
-    assert answers["python"]["value"] == "Yes" and answers["python"]["source"] == "profile"
-    assert answers["k8s"]["source"] == "needs_input"  # QA-01: the profile doesn't show it
+    assert answers["python"]["value"] == "Yes" and answers["python"]["source"] == "resume"  # the tailored resume shows it
+    assert answers["k8s"]["source"] == "needs_input"  # QA-01: neither the resume nor the profile shows it (asked, no answer)
     assert answers["years"]["source"] == "profile" and int(answers["years"]["value"]) >= 9  # total years from the profile
     assert answers["why"]["source"] == "ai" and "data pipelines" in answers["why"]["value"]
     assert answers["resume"] == {**answers["resume"], "value": "resume", "source": "file"}
     assert answers["linkedin"]["source"] == "needs_input"  # the sample profile has no LinkedIn URL
     assert result["ai_request"] is True
     assert [c["schema"] for c in fake_ai.calls].count("AIFormAnswers") == 1  # QA-05: one request for the page
-    assert "<questions>" in fake_ai.calls[-1]["input"] and "Kubernetes" not in fake_ai.calls[-1]["input"].split("<questions>")[1]
+    sent = fake_ai.calls[-1]["input"]
+    assert "<tailored_resume>" in sent and "<candidate_notes>" not in sent  # no notes saved for this candidate
+    questions = sent.split("<questions>")[1]
+    assert "Kubernetes" in questions  # a skill question the deterministic checks can't settle goes to the AI, with the resume
+    assert "LinkedIn" not in questions and "salary" not in questions.lower()  # contact and personal questions need notes
 
     # The same page again: the free-text answer is reused, no new AI request (QA-05); Answers.json is written (QA-06).
     client.post(f"/applications/{app['id']}/answers", json={"page_url": "https://boards.example.com/acme/apply", "fields": _fields()})
@@ -228,10 +232,48 @@ def test_candidate_notes_let_the_ai_answer_what_the_resume_cannot(client, setup,
     assert answers["gender"]["value"] == "I decline to self-identify" and answers["consent"]["source"] == "needs_input"
     assert answers["why"]["source"] == "ai"
 
-    # Cleared notes: short questions are left for the user again, without asking the AI.
+    # The same page again, unchanged: the question the AI couldn't answer isn't asked again (QA-05).
+    client.post(f"/applications/{app['id']}/answers", json={"fields": fields})
+    assert len([c for c in fake_ai.calls if c["schema"] == "AIFormAnswers"]) == 1
+
+    # Cleared notes: personal questions (relocation, salary) are left for the user and not sent to the AI; the skill
+    # question keeps its earlier answer; the notes changed, so the unanswered question is asked once more, without notes.
     client.patch(f"/candidates/{candidate_id}", json={"answer_notes": ""})
-    again = client.post(f"/applications/{app['id']}/answers", json={"fields": fields[:3]}).json()
-    assert {a["source"] for a in again["answers"]} == {"needs_input"} and again["ai_request"] is False
+    again = {a["field_id"]: a for a in client.post(f"/applications/{app['id']}/answers", json={"fields": fields}).json()["answers"]}
+    assert again["relocate"]["source"] == again["salary"]["source"] == "needs_input"
+    assert again["k8s"]["value"] == "Yes" and "earlier" in again["k8s"]["note"]
+    calls = [c for c in fake_ai.calls if c["schema"] == "AIFormAnswers"]
+    asked = calls[-1]["input"].split("<questions>")[1]
+    assert len(calls) == 2 and "<candidate_notes>" not in calls[-1]["input"]
+    assert "snack" in asked and "relocate" not in asked and "Desired salary" not in asked
+
+
+def test_answers_follow_the_tailored_resume(client, setup, secret_store, fake_ai):
+    app = create(client, setup).json()
+    drain(client)
+    secret_store.set("openai_api_key", "sk-test-key-123456")
+    # The resume as sent: Terraform named on the first role (and in Skills), a wording only this resume has.
+    content = client.get(f"/applications/{app['id']}").json()["resume"]["content"]
+    first = content["experience"][0]
+    first["technologies"] = [*first.get("technologies", []), "Terraform"]
+    first["bullets"][0]["text"] += " (tailored wording for Acme)"
+    content["skills"] = [*content["skills"], "Terraform"]
+    client.put(f"/applications/{app['id']}/documents/resume", json={"content": content})
+    drain(client)
+
+    fields = [
+        {"field_id": "tf", "label": "Do you have experience with Terraform?", "type": "radio", "options": ["Yes", "No"]},
+        {"field_id": "tf_years", "label": "Years of experience with Terraform", "type": "number"},
+        {"field_id": "why", "label": "Describe a project you are proud of.", "type": "textarea"},
+    ]
+    fake_ai.on("AIFormAnswers", lambda text: {"answers": [{"field_id": "why", "answer": "I moved our pipelines to Airflow."}]})
+    answers = {a["field_id"]: a for a in client.post(f"/applications/{app['id']}/answers", json={"fields": fields}).json()["answers"]}
+    assert answers["tf"] == {**answers["tf"], "value": "Yes", "source": "resume", "note": "The tailored resume shows Terraform"}
+    assert answers["tf_years"]["source"] == "resume" and int(answers["tf_years"]["value"]) >= 1  # the first role's dates
+    sent = [c for c in fake_ai.calls if c["schema"] == "AIFormAnswers"][-1]["input"]
+    resume_part = sent.split("<tailored_resume>")[1].split("</tailored_resume>")[0]
+    assert "(tailored wording for Acme)" in resume_part and "Terraform" in resume_part  # the latest version, as sent
+    assert " to " in resume_part  # role dates, for "years of" questions
 
 
 # ---------------------------------------------------------------- the confirmation screen (BE-10)

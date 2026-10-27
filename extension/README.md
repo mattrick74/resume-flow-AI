@@ -34,7 +34,7 @@ Click the ResumeFlow icon to open the side panel next to the job posting.
 | **Save & rank** | The backend analyzes the job and ranks candidates **locally** (no AI). Postings saved before are listed. |
 | **Save for later** | Saves the job only. Later, on that tab, **Generate now** (best candidate, in the background) or **Choose candidate**; or **Generate all saved** (the *Saved jobs* card, also Jobs in the workspace) does every saved job at once. |
 | **Generate** | **One AI request** writes the resume and cover letter; Resume.pdf and CoverLetter.pdf are saved in `Downloads\Applications\<date>\<NNN> <Candidate>`. |
-| **Answer questions** | On the application form: fills fields from the profile and your saved answers (Settings → Application answers), writes free-text answers with one AI request per page, attaches Resume.pdf where the site allows. Fields left for you are outlined in amber; save an answer there to reuse it. Consent boxes are never ticked and nothing is submitted. |
+| **Answer questions** | On the application form: fills fields from the profile, the application's tailored resume (skill and years-of questions, *Filled from resume*) and your saved answers (Settings → Application answers). One AI request per page answers the rest **based on the tailored resume** (its titles, dates, skills and wording), using the profile and notes for what it doesn't cover; a question it can't answer isn't asked again until the resume, profile or notes change. Attaches Resume.pdf where the site allows. Fields left for you are outlined in amber; save an answer there to reuse it. Consent boxes are never ticked and nothing is submitted. |
 | **Notes for answers** | Each candidate has a *Notes for answers* tab (salary, relocation, availability, eligibility, the story behind a project). The AI reads them with the profile for that page's questions, short and multiple-choice ones too; they never go into resumes or cover letters. Self-identification and consent questions still never go to the AI. |
 | **Submit** (you) | After your submit click, the confirmation page is recognized and captured as `Submission_<date>_<time>.png` in the application folder; the application is marked Submitted. **Capture now** does it by hand. |
 
@@ -42,6 +42,17 @@ Click the ResumeFlow icon to open the side panel next to the job posting.
 
 The panel remembers each tab: switch away and back and you find the same captured job (with your edits), candidate
 choice and form answers, until the tab is closed.
+
+**The application form on another page.** A tab opened from the job page (its Apply button) uses the same application
+automatically. A tab you opened yourself on the company's careers site or its Workday/Greenhouse/Lever page is
+recognized by the company name in its address or title: the panel offers *Use …'s application*. Otherwise pick it under
+*Application for this tab*.
+
+**Forms with several steps or tabs.** Click **Answer questions** once on the first step. After that, each new step is
+answered by itself as it appears: the next step or tab on the same page, a follow-up question revealed by an answer, or
+the next page of the form on the same site. Only empty fields are filled, so what you typed is kept, and only those empty
+fields are sent to the backend. Turn it off with *Answer each new step of this form automatically*. It stops after you
+submit. *Next*, *Continue*, *Save and continue* and *Review* buttons don't count as submitting.
 
 ## Files
 
