@@ -11,10 +11,12 @@ import io
 from docx import Document
 from docx.enum.text import WD_ALIGN_PARAGRAPH, WD_TAB_ALIGNMENT
 from docx.oxml import OxmlElement
+from docx.opc.constants import RELATIONSHIP_TYPE as RT
 from docx.oxml.ns import qn
 from docx.shared import Inches, Pt, RGBColor
 
 from resumeflow.domain.content import CoverLetterContent, ResumeContent
+from resumeflow.domain.links import clean_links, link_href, link_text
 from resumeflow.domain.templates import BUILTIN_TEMPLATES, DEFAULT_TEMPLATE, TemplateStyle
 
 _MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]
@@ -108,7 +110,25 @@ def _heading(document: Document, style: TemplateStyle, text: str) -> None:
         _bottom_border(paragraph, style.rule_color)
 
 
-def _header_block(document: Document, style: TemplateStyle, name: str, contact_bits: list[str], headline: str | None) -> None:
+def _hyperlink(paragraph, url: str, text: str, size_pt: float, color: str) -> None:
+    """A clickable link (kept as a link in the PDF) styled like the text around it."""
+    link = OxmlElement("w:hyperlink")
+    link.set(qn("r:id"), paragraph.part.relate_to(link_href(url), RT.HYPERLINK, is_external=True))
+    run, props = OxmlElement("w:r"), OxmlElement("w:rPr")
+    for tag, value in (("w:color", color), ("w:sz", str(round(size_pt * 2)))):
+        element = OxmlElement(tag)
+        element.set(qn("w:val"), value)
+        props.append(element)
+    run.append(props)
+    label = OxmlElement("w:t")
+    label.set(qn("xml:space"), "preserve")
+    label.text = text
+    run.append(label)
+    link.append(run)
+    paragraph._p.append(link)
+
+
+def _header_block(document: Document, style: TemplateStyle, name: str, contact_bits: list[str], headline: str | None, links: list[str] | None = None) -> None:
     align = WD_ALIGN_PARAGRAPH.CENTER if style.name_align == "center" else WD_ALIGN_PARAGRAPH.LEFT
     title = document.add_paragraph()
     title.alignment = align
@@ -125,12 +145,23 @@ def _header_block(document: Document, style: TemplateStyle, name: str, contact_b
         line.paragraph_format.space_after = Pt(0)
         headline_run = line.add_run(headline)
         headline_run.font.size = Pt(style.size + 1)
-    if contact_bits:
+    links = clean_links(links)
+    if contact_bits or links:
         contact = document.add_paragraph()
         contact.alignment = align
-        contact_run = contact.add_run("  |  ".join(contact_bits))
-        contact_run.font.size = Pt(style.size - 1)
-        contact_run.font.color.rgb = _rgb(style.muted_color)
+
+        def plain(text: str) -> None:
+            contact_run = contact.add_run(text)
+            contact_run.font.size = Pt(style.size - 1)
+            contact_run.font.color.rgb = _rgb(style.muted_color)
+
+        if contact_bits:
+            plain("  |  ".join(contact_bits))
+        for index, url in enumerate(links):
+            if contact_bits or index:
+                plain("  |  ")
+            # The address itself, clickable: "linkedin.com/in/name" → https://www.linkedin.com/in/name
+            _hyperlink(contact, url, link_text(url), style.size - 1, style.muted_color)
 
 
 def _bullet(document: Document, text: str) -> None:
@@ -143,8 +174,8 @@ def render_resume(content: ResumeContent, template: TemplateStyle | str = DEFAUL
     style = _style(template)
     document = _base_document(style)
     contact = content.contact
-    bits = [b for b in (contact.location, contact.phone, contact.email, *contact.links) if b]
-    _header_block(document, style, contact.name, bits, content.headline)
+    bits = [b for b in (contact.location, contact.phone, contact.email) if b]
+    _header_block(document, style, contact.name, bits, content.headline, contact.links)
 
     if content.summary:
         _heading(document, style, "Summary")

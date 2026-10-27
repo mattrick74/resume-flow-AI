@@ -7,6 +7,7 @@ import re
 from pydantic import BaseModel, Field
 
 from resumeflow.domain.enums import GenerationOperation
+from resumeflow.domain.links import clean_links
 from resumeflow.domain.profile import Bullet, CandidateProfile, Certification, Education, Role
 from resumeflow.services.ai.service import UNTRUSTED_NOTICE, AIService, wrap
 from resumeflow.services.resume_parser import ExtractedResume, ExtractedSkill
@@ -61,6 +62,8 @@ Rules:
 - Extract only what the resume explicitly states. Never infer, embellish, or add facts.
 - Copy bullet points, titles, employers and the summary verbatim (fix only line-wrap breaks).
 - Dates: use YYYY-MM when a month is given, YYYY otherwise, and "present" for current roles.
+- links: full web addresses only (LinkedIn, GitHub, portfolio), e.g. "https://www.linkedin.com/in/name". A label's
+  address may follow it in parentheses ("LinkedIn (https://...)"); use the address. Never return a label alone.
 - Skills: list technologies, tools, methods and domain skills that appear in the resume. For each,
   give a short verbatim evidence quote from the resume text.
 - Use null for anything not present. Order employment most recent first."""
@@ -130,7 +133,7 @@ def ai_extract_resume(ai: AIService, resume_text: str) -> ExtractedResume:
             for c in result.certifications
             if c.name.strip() and 1900 <= (c.year or 2000) <= 2100
         ],
-        links=result.links[:10],
+        links=clean_links(result.links)[:10],  # web addresses only; a bare label such as "LinkedIn" is not a link
         work_authorization=result.work_authorization,
     )
     return ExtractedResume(

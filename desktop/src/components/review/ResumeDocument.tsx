@@ -52,10 +52,34 @@ function Flags({ issues }: { issues: Issue[] }) {
   );
 }
 
+const WEB_ADDRESS =
+  /(?:https?:\/\/[^\s<>"'|]+|www\.[^\s<>"'|]+|\b[a-z0-9][a-z0-9-]*(?:\.[a-z0-9-]+)*\.(?:com|net|org|io|dev|me|co|ai|app|info|tech|site|page|us|uk|ca|de|fr|in|au|eu|xyz|blog|online|pro|cloud)\b(?:\/[^\s<>"'|]*)?)/gi;
+
+function webAddress(value: string): string | null {
+  for (const match of value.matchAll(WEB_ADDRESS)) {
+    if (match.index > 0 && value[match.index - 1] === "@") continue; // the domain of an email address
+    if (!match[0].includes("@")) return match[0];
+  }
+  return null;
+}
+
+/** Contact links as the resume file shows them: the address itself ("linkedin.com/in/name"); a bare label such as
+ * "LinkedIn" is left out, as in the exported document. */
+export function linkAddresses(links: string[]): string[] {
+  const shown = new Map<string, string>();
+  for (const link of links) {
+    const address = webAddress(link ?? "");
+    if (!address) continue;
+    const text = address.replace(/[.,;:)\]}'"]+$/, "").replace(/^(?:https?:\/\/)?(?:www\.)?/i, "").replace(/\/+$/, "");
+    if (!shown.has(text.toLowerCase())) shown.set(text.toLowerCase(), text);
+  }
+  return [...shown.values()];
+}
+
 export function ResumePreview({ content, issues, docStyle }: { content: ResumeContent; issues: Issue[]; docStyle?: TemplateStyle }) {
   const selected = useSelectedTemplateStyle();
   const style = docStyle ?? selected;
-  const contact = [content.contact.location, content.contact.phone, content.contact.email, ...content.contact.links].filter((x): x is string => Boolean(x));
+  const contact = [content.contact.location, content.contact.phone, content.contact.email, ...linkAddresses(content.contact.links)].filter((x): x is string => Boolean(x));
   return (
     <Paper docStyle={style}>
       <DocHeader

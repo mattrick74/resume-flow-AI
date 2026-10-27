@@ -118,15 +118,15 @@ def test_export_writes_exact_layout(client, setup):
     names = sorted(p.name for p in folder.iterdir())
     assert names == sorted(
         [
-            "001_Acme_Data_Co_Resume.docx",
-            "001_Acme_Data_Co_Cover_Letter.docx",
+            "Resume.docx",
+            "CoverLetter.docx",
             "001_Acme_Data_Co_JD.txt",
             "001_Acme_Data_Co_Job_URL.txt",
             "001_Acme_Data_Co_Metadata.json",
         ]
     )
     assert exported["pdf_status"] == "skipped"
-    text = "\n".join(p.text for p in DocxDocument(folder / "001_Acme_Data_Co_Resume.docx").paragraphs)
+    text = "\n".join(p.text for p in DocxDocument(folder / "Resume.docx").paragraphs)
     assert "Avery Quinlan" in text and "Northwind Analytics Inc" in text
     assert (folder / "001_Acme_Data_Co_JD.txt").read_text(encoding="utf-8") == SAMPLE_JOBS[0]["text"].strip()
     metadata = json.loads((folder / "001_Acme_Data_Co_Metadata.json").read_text(encoding="utf-8"))
@@ -186,14 +186,14 @@ def test_long_output_folder_still_exports_within_the_path_limit(client, setup, t
 def test_export_never_overwrites(client, setup):
     folder = setup["out"] / date.today().isoformat() / "001 Avery Quinlan"
     folder.mkdir(parents=True)
-    existing = folder / "001_Acme_Data_Co_Resume.docx"
+    existing = folder / "Resume.docx"
     existing.write_bytes(b"operator's own file")
     app = generated_app(client, setup)
     client.post(f"/applications/{app['id']}/approve", json={})
     client.post(f"/applications/{app['id']}/export")
     drain(client)
     assert existing.read_bytes() == b"operator's own file"
-    assert (folder / "001_Acme_Data_Co_Resume_v2.docx").exists()
+    assert (folder / "Resume_v2.docx").exists()
 
 
 def test_url_less_export_uses_the_same_numbered_profile_folder(client, setup):
@@ -244,7 +244,7 @@ def test_pdf_failure_keeps_docx_and_retry_succeeds(client, setup, monkeypatch):
     fixed = client.get(f"/applications/{app['id']}").json()
     assert fixed["pdf_status"] == "succeeded" and fixed["error"] is None
     folder = Path(fixed["output_directory"])
-    assert (folder / "001_Acme_Data_Co_Resume.pdf").exists()
+    assert (folder / "Resume.pdf").exists()
     metadata = json.loads((folder / "001_Acme_Data_Co_Metadata.json").read_text(encoding="utf-8"))
     assert metadata["pdf_status"] == "succeeded"
 

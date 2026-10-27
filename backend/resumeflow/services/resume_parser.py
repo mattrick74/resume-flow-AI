@@ -16,6 +16,7 @@ from typing import Literal
 
 from pydantic import BaseModel, Field
 
+from resumeflow.domain.links import clean_links, find_url, is_profile_link, link_key
 from resumeflow.domain.profile import Bullet, CandidateProfile, Certification, Education, Role
 from resumeflow.domain.skills import detect_known_skills, normalize_skill
 from resumeflow.errors import AppError
@@ -94,6 +95,8 @@ def _extract_docx(data: bytes) -> str:
     from docx.oxml.ns import qn
 
     w_p, w_t, w_tab = qn("w:p"), qn("w:t"), qn("w:tab")
+    w_hyperlink, r_id = qn("w:hyperlink"), qn("r:id")
+    w_instr, w_fld_simple, w_instr_attr = qn("w:instrText"), qn("w:fldSimple"), qn("w:instr")
     breaks = {qn("w:br"), qn("w:cr")}
     fallback = "{http://schemas.openxmlformats.org/markup-compatibility/2006}Fallback"
 
@@ -124,8 +127,46 @@ def _extract_docx(data: bytes) -> str:
                 parts.append("\n")
         return "".join(parts)
 
-    def lines_of(element) -> list[str]:
-        return [paragraph_text(p) for p in element.iter(w_p) if not inside_fallback(p)]
+    def hyperlinks(paragraph, part) -> list[tuple[str, str]]:
+        """(visible text, address) of the web links in a paragraph: hyperlink elements and HYPERLINK fields."""
+        found: list[tuple[str, str]] = []
+        for link in paragraph.iter(w_hyperlink):
+            rel = part.rels.get(link.get(r_id) or "") if nearest_paragraph(link) is paragraph else None
+            if rel is not None and rel.is_external:
+                found.append(("".join(t.text or "" for t in link.iter(w_t)), rel.target_ref))
+        for node in paragraph.iter(w_instr, w_fld_simple):
+            if nearest_paragraph(node) is paragraph:
+                field = node.text if node.tag == w_instr else node.get(w_instr_attr)
+                if match := re.search(r'HYPERLINK\s+"([^"]+)"', field or ""):
+                    found.append(("", match.group(1)))
+        return found
+
+    def with_link_addresses(text: str, links: list[tuple[str, str]], header_area: bool) -> str:
+        # A link shown as a label ("LinkedIn") keeps its address next to it, so the profile gets the real URL. Only in
+        # the resume's header area, or for profile sites, so a link inside a bullet doesn't change the bullet's text.
+        for label, url in links:
+            if not url.lower().startswith(("http://", "https://")) or link_key(url) in link_key_text(text):
+                continue
+            if not (header_area or is_profile_link(url)):
+                continue
+            label = label.strip()
+            if label and label in text and not find_url(label):
+                text = text.replace(label, f"{label} ({url})", 1)
+            elif not find_url(label):
+                text = f"{text} {url}".strip()
+        return text
+
+    def lines_of(element, part, header_lines: int) -> list[str]:
+        lines: list[str] = []
+        for p in element.iter(w_p):
+            if inside_fallback(p):
+                continue
+            text = paragraph_text(p)
+            links = hyperlinks(p, part)
+            if links:
+                text = with_link_addresses(text, links, len([line for line in lines if line.strip()]) < header_lines)
+            lines.append(text)
+        return lines
 
     try:
         document = Document(io.BytesIO(data))
@@ -135,17 +176,47 @@ def _extract_docx(data: bytes) -> str:
     lines: list[str] = []
     seen_headers: set[str] = set()
     for section in document.sections:
-        for part in (section.header, section.first_page_header):
+        for header in (section.header, section.first_page_header):
             try:
-                header_lines = lines_of(part._element)
+                header_lines = lines_of(header._element, header.part, 1000)  # page headers hold contact details
             except Exception:
                 continue
             key = "\n".join(header_lines)
             if key.strip() and key not in seen_headers:
                 seen_headers.add(key)
                 lines.extend(header_lines)
-    lines.extend(lines_of(document.element.body))
+    lines.extend(lines_of(document.element.body, document.part, _HEADER_AREA_LINES))
     return "\n".join(lines)
+
+
+_HEADER_AREA_LINES = 12  # the first non-empty lines of a resume: name, headline and contact details
+
+
+def link_key_text(text: str) -> str:
+    """``text`` compared the way ``link_key`` compares addresses (case and "https://www." don't matter)."""
+    return re.sub(r"https?://|www\.", "", text, flags=re.IGNORECASE).lower()
+
+
+def _pdf_page_text(page, first_page: bool) -> str:
+    """A page's text with the address of each web link next to its label ("LinkedIn (https://…)") when the address
+    itself isn't shown: in the top part of the first page (contact details), or anywhere for profile sites."""
+    text = page.get_text("text")
+    top = page.rect.y0 + page.rect.height * 0.25
+    for link in page.get_links():
+        url = (link.get("uri") or "").strip()
+        if not url.lower().startswith(("http://", "https://")) or link_key(url) in link_key_text(text):
+            continue
+        area = link.get("from")
+        if not ((first_page and area is not None and area.y1 <= top) or is_profile_link(url)):
+            continue
+        label = " ".join((page.get_textbox(area) if area is not None else "").split())
+        if find_url(label):
+            continue
+        if label and label in text:
+            text = text.replace(label, f"{label} ({url})", 1)
+        else:
+            text += f"\n{url}"
+    return text
 
 
 def _extract_pdf(data: bytes) -> str:
@@ -158,7 +229,7 @@ def _extract_pdf(data: bytes) -> str:
     with document:
         if document.needs_pass:
             raise AppError(422, "encrypted_pdf", "This PDF is password-protected. Remove the password and try again.")
-        return "\n".join(page.get_text("text") for page in document)
+        return "\n".join(_pdf_page_text(page, index == 0) for index, page in enumerate(document))
 
 
 def _normalize_text(text: str) -> str:
@@ -324,7 +395,7 @@ def _parse_header(header: list[str], text: str) -> dict[str, str | None | list[s
                 break
         if location:
             break
-    links = sorted({m.group(0).rstrip(".,;)") for m in _LINK.finditer("\n".join(lines))})
+    links = clean_links(sorted({m.group(0).rstrip(".,;)") for m in _LINK.finditer("\n".join(lines))}))
     headline = None
     if name:
         index = next((i for i, line in enumerate(lines) if _name_case(line) == name), -1)

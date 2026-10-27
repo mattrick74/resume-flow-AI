@@ -30,6 +30,7 @@ from resumeflow.domain.content import (
     Section,
 )
 from resumeflow.domain.enums import GenerationOperation
+from resumeflow.domain.links import clean_links
 from resumeflow.domain.requirements import JobRequirements
 from resumeflow.domain.skills import detect_tools, display_name, find_skill_in_text, normalize_skill, skill_covers
 from resumeflow.services.ai.provider import (
@@ -137,7 +138,7 @@ def _contact(snap: dict[str, Any]) -> Contact:
         email=snap.get("email"),
         phone=snap.get("phone"),
         location=snap.get("location"),
-        links=snap.get("links") or [],
+        links=clean_links(snap.get("links")),  # real addresses only: a saved label such as "LinkedIn" is left out
     )
 
 

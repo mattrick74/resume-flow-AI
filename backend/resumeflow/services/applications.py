@@ -589,12 +589,13 @@ def _output_layout(db: Session, app: Application) -> tuple[Path, str]:
 _FILE_NAMES = {
     (DocumentType.RESUME, DocumentFormat.DOCX): "Resume.docx",
     (DocumentType.RESUME, DocumentFormat.PDF): "Resume.pdf",
-    (DocumentType.COVER_LETTER, DocumentFormat.DOCX): "Cover_Letter.docx",
-    (DocumentType.COVER_LETTER, DocumentFormat.PDF): "Cover_Letter.pdf",
+    (DocumentType.COVER_LETTER, DocumentFormat.DOCX): "CoverLetter.docx",
+    (DocumentType.COVER_LETTER, DocumentFormat.PDF): "CoverLetter.pdf",
     (DocumentType.JOB_DESCRIPTION, DocumentFormat.TXT): "JD.txt",
     (DocumentType.JOB_URL, DocumentFormat.TXT): "Job_URL.txt",
     (DocumentType.METADATA, DocumentFormat.JSON): "Metadata.json",
 }
+_PLAIN_NAMED = {DocumentType.RESUME, DocumentType.COVER_LETTER}
 
 
 def _file_doc(db: Session, app_id: str, doc_type: DocumentType, fmt: DocumentFormat, version: int) -> Document | None:
@@ -612,7 +613,10 @@ def _ensure_file(ctx: JobContext, app_id: str, doc_type: DocumentType, fmt: Docu
         if existing and existing.file_path and Path(existing.file_path).exists():
             return Path(existing.file_path)
     data = produce()
-    path = write_unique_file(folder / f"{prefix}_{_FILE_NAMES[(doc_type, fmt)]}", data)
+    name = _FILE_NAMES[(doc_type, fmt)]
+    # The documents are sent as they are, so they're plainly "Resume" and "CoverLetter" (each application has its own
+    # folder; a later version becomes "Resume_v2"). The working files keep the application number and company.
+    path = write_unique_file(folder / (name if doc_type in _PLAIN_NAMED else f"{prefix}_{name}"), data)
     with ctx.session() as db:
         row = _file_doc(db, app_id, doc_type, fmt, version)
         if row is None:

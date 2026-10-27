@@ -163,3 +163,14 @@ def test_memory_secret_backend_never_touches_credential_manager(config):
 
     app = create_app(config.model_copy(update={"secret_backend": "memory"}))
     assert isinstance(app.state.secret_store, MemorySecretStore)
+
+
+def test_resume_and_cover_letter_files_are_named_plainly(client, setup):
+    """The documents are saved as "Resume" and "CoverLetter"; the working files keep the application number."""
+    client.patch("/settings", json={"export_mode": "auto"})
+    app = create(client, setup).json()
+    drain(client)
+    done = client.get(f"/applications/{app['id']}").json()
+    names = {Path(f["path"]).name for f in done["files"] if f["exists"]}
+    assert {"Resume.docx", "CoverLetter.docx"} <= names, names
+    assert {"001_Acme_Data_Co_JD.txt", "001_Acme_Data_Co_Metadata.json"} <= names, names
