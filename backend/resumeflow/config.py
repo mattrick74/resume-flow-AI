@@ -22,8 +22,35 @@ def default_data_dir() -> Path:
     return Path(base) / "ResumeFlowAI"
 
 
+FOLDERID_DOWNLOADS = "{374DE290-123F-4565-9164-39C4925E467B}"
+
+
+def downloads_dir() -> Path:
+    """The Downloads folder the web browser saves to, also when it was moved to another drive (Windows known folder)."""
+    if os.name == "nt":
+        try:
+            import ctypes
+            from ctypes import wintypes
+            from uuid import UUID
+
+            guid = (ctypes.c_ubyte * 16).from_buffer_copy(UUID(FOLDERID_DOWNLOADS).bytes_le)
+            found = ctypes.c_wchar_p()
+            get_path = ctypes.windll.shell32.SHGetKnownFolderPath
+            get_path.argtypes = [ctypes.c_void_p, wintypes.DWORD, wintypes.HANDLE, ctypes.POINTER(ctypes.c_wchar_p)]
+            get_path.restype = ctypes.c_long
+            if get_path(ctypes.byref(guid), 0, None, ctypes.byref(found)) == 0:
+                try:
+                    if found.value:
+                        return Path(found.value)
+                finally:
+                    ctypes.windll.ole32.CoTaskMemFree(ctypes.cast(found, ctypes.c_void_p))
+        except (OSError, AttributeError, ValueError):
+            pass
+    return Path.home() / "Downloads"
+
+
 def default_output_root() -> Path:
-    return Path.home() / "Documents" / "ResumeFlow AI" / "Applications"
+    return downloads_dir() / "Applications"
 
 
 class AppConfig(BaseSettings):
