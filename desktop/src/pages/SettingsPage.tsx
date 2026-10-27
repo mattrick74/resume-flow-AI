@@ -6,6 +6,7 @@ import { useChangeTheme, useTheme } from "@/app/theme";
 import { ErrorState, describeError } from "@/components/common/ErrorState";
 import { PageHeader } from "@/components/common/PageHeader";
 import { AiOptionsSection, BackupsPanel, DocumentsSection, MatchingWeightsSection, ModelPricesSection } from "@/components/settings/AdvancedSections";
+import { AnswerBankSection } from "@/components/settings/AnswerBankSection";
 import { Row, Section } from "@/components/settings/layout";
 import { TemplatesSection } from "@/components/settings/TemplatesSection";
 import { Badge } from "@/components/ui/badge";
@@ -199,6 +200,8 @@ function SettingsForm({ data }: { data: SettingsResponse }) {
       <TemplatesSection />
 
       <DocumentsSection settings={saved} />
+
+      <AnswerBankSection />
 
       <Section title="Throughput" description="Daily target and how many background jobs run at once.">
         <div className="grid gap-4 sm:grid-cols-2">

@@ -109,17 +109,9 @@ describe("matching", () => {
 });
 
 describe("review", () => {
-  it("has no checking or improve step and approves in one click", async () => {
-    let approved: unknown = null;
+  it("has no checking, improve or approval step", async () => {
     mockBackend({
-      override: (call) => {
-        if (call.path === "/applications/a1" && call.method === "GET") return json(applicationDetail());
-        if (call.path === "/applications/a1/approve") {
-          approved = call.body;
-          return json(applicationDetail({ status: "APPROVED" }));
-        }
-        return undefined;
-      },
+      override: (call) => (call.path === "/applications/a1" && call.method === "GET" ? json(applicationDetail()) : undefined),
     });
     renderApp("/applications/a1");
     expect(await screen.findByText("Built pipelines for 250 clients")).toBeInTheDocument();
@@ -128,8 +120,6 @@ describe("review", () => {
     const steps = within(screen.getByRole("list", { name: "Progress" }));
     expect(steps.queryByText("Review")).not.toBeInTheDocument();
     expect(steps.queryByText("Approved")).not.toBeInTheDocument();
-    await userEvent.click(screen.getByRole("button", { name: "Approve" }));
-    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
-    await waitFor(() => expect(approved).toEqual({ acknowledge_warnings: true }));
+    expect(screen.queryByRole("button", { name: "Approve" })).not.toBeInTheDocument(); // files are exported automatically
   });
 });

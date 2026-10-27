@@ -9,7 +9,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from starlette.middleware.trustedhost import TrustedHostMiddleware
 
 from resumeflow import __version__
-from resumeflow.api import applications, candidates, dashboard, health, jobs, operations, processing, settings, system, templates
+from resumeflow.api import answers, applications, candidates, dashboard, health, jobs, operations, pair, processing, settings, system, templates
 from resumeflow.auth import require_session_token
 from resumeflow.config import AppConfig
 from resumeflow.db.migrate import current_revision, upgrade_to_head
@@ -89,7 +89,7 @@ def create_app(
     app.add_middleware(TrustedHostMiddleware, allowed_hosts=ALLOWED_HOSTS)
     app.add_middleware(
         CORSMiddleware,
-        allow_origins=config.allowed_origins,
+        allow_origins=[*config.allowed_origins, *(f"chrome-extension://{extension_id}" for extension_id in config.extension_ids)],
         allow_methods=["GET", "POST", "PATCH", "PUT", "DELETE"],
         allow_headers=["Authorization", "Content-Type"],
     )
@@ -97,6 +97,7 @@ def create_app(
 
     protected = [Depends(require_session_token)]
     app.include_router(health.router)
-    for module in (settings, dashboard, candidates, jobs, applications, processing, operations, system, templates):
+    app.include_router(pair.router)  # unauthenticated: exchanges a pairing code for the token
+    for module in (settings, dashboard, candidates, jobs, applications, answers, processing, operations, system, templates):
         app.include_router(module.router, dependencies=protected)
     return app

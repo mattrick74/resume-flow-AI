@@ -22,6 +22,7 @@ def default_data_dir() -> Path:
     return Path(base) / "ResumeFlowAI"
 
 
+EXTENSION_ID = "ocfabkpfecphnpllkgbhopleplbogifp"
 FOLDERID_DOWNLOADS = "{374DE290-123F-4565-9164-39C4925E467B}"
 
 
@@ -67,6 +68,9 @@ class AppConfig(BaseSettings):
         "https://tauri.localhost",
         "tauri://localhost",
     ]
+    # v2.0: the ResumeFlow Chrome extension (its ID is fixed by the "key" in extension/manifest.json). Its pages and
+    # service worker call the backend with the paired token.
+    extension_ids: list[str] = [EXTENSION_ID]
     log_level: str = "INFO"
     # Background queue workers. Tests disable them and drain the queue explicitly.
     workers_enabled: bool = True

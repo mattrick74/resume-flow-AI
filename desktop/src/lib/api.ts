@@ -1,6 +1,8 @@
 import { getBackendConnection } from "@/lib/backend";
 import type {
   Analytics,
+  AnswerBank,
+  AnswerBankEntry,
   AppSettings,
   ApplicationDetail,
   ApplicationSummary,
@@ -238,6 +240,12 @@ export const api = {
     list: () => apiFetch<BackupInfo[]>("/backups"),
     create: () => post<BackupInfo>("/backups"),
     restore: (name: string) => post<{ restored: string; safety_backup: string }>("/backups/restore", { name }),
+  },
+  /** v2.0: saved answers to common application questions (global, or per candidate). */
+  answerBank: {
+    get: (candidateId?: string | null) => apiFetch<AnswerBank>(`/answer-bank${candidateId ? `?candidate_id=${encodeURIComponent(candidateId)}` : ""}`),
+    save: (entry: { candidate_id?: string | null; key?: string | null; question?: string | null; answer: string }) => put<AnswerBankEntry>("/answer-bank", entry),
+    remove: (id: string) => del<void>(`/answer-bank/${encodeURIComponent(id)}`),
   },
   system: {
     open: (path: string, reveal = false) => post<void>("/system/open", { path, reveal }),

@@ -10,7 +10,8 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
-const port = process.env.RESUMEFLOW_PORT ?? "8765";
+// 8767: clear of the shared backend (8765) and the debug desktop app's backend (8766).
+const port = process.env.RESUMEFLOW_PORT ?? "8767";
 const python = process.env.RESUMEFLOW_PYTHON ?? path.join(root, "backend", ".venv", "Scripts", "python.exe");
 
 const env = {

@@ -35,7 +35,8 @@ APPLICATION_TRANSITIONS: dict[S, frozenset[S]] = {
     # Editing approved/exported content sends it back for review; it is never silently changed.
     S.APPROVED: frozenset({S.EXPORTED, S.GENERATING, S.AWAITING_REVIEW}),
     S.EXPORTED: frozenset({S.SUBMITTED, S.GENERATING, S.AWAITING_REVIEW}),
-    S.SUBMITTED: frozenset({S.INTERVIEW, S.REJECTED, S.OFFER}),
+    # v2.0: deleting the captured confirmation screen undoes "Submitted".
+    S.SUBMITTED: frozenset({S.INTERVIEW, S.REJECTED, S.OFFER, S.EXPORTED}),
     S.INTERVIEW: frozenset({S.OFFER, S.REJECTED}),
     S.OFFER: frozenset(),
     S.REJECTED: frozenset(),

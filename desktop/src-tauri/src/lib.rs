@@ -1,12 +1,12 @@
 mod sidecar;
 
 use sidecar::{BackendConnection, BackendStatus, Sidecar};
-use tauri::{Manager, RunEvent, State};
+use tauri::{Manager, State};
 
-/// Hands the UI the sidecar's loopback URL and per-session token.
+/// Hands the UI the shared backend's loopback URL and saved token.
 #[tauri::command]
 fn backend_connection(sidecar: State<'_, Sidecar>) -> Result<BackendConnection, String> {
-    sidecar.connection().ok_or_else(|| "The ResumeFlow engine isn't running".to_string())
+    sidecar.connection()
 }
 
 /// Lets the UI distinguish "still starting" from "process exited".
@@ -15,14 +15,15 @@ fn backend_status(sidecar: State<'_, Sidecar>) -> BackendStatus {
     sidecar.status()
 }
 
-/// Replaces a crashed or unresponsive sidecar with a fresh one.
+/// Starts the shared backend again if it stopped answering. Async so the wait never blocks the window.
 #[tauri::command]
-fn restart_backend(sidecar: State<'_, Sidecar>) -> Result<BackendConnection, String> {
+async fn restart_backend(sidecar: State<'_, Sidecar>) -> Result<BackendConnection, String> {
     sidecar.restart().map_err(|e| e.to_string())
 }
 
 pub fn run() {
-    let app = tauri::Builder::default()
+    // The backend is shared with the Chrome extension, so it keeps running when this window closes.
+    tauri::Builder::default()
         .plugin(tauri_plugin_notification::init())
         .setup(|app| {
             let sidecar = Sidecar::start(app.handle())?;
@@ -30,14 +31,6 @@ pub fn run() {
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![backend_connection, backend_status, restart_backend])
-        .build(tauri::generate_context!())
-        .expect("failed to build ResumeFlow AI");
-
-    app.run(|handle, event| {
-        if let RunEvent::Exit = event {
-            if let Some(sidecar) = handle.try_state::<Sidecar>() {
-                sidecar.stop();
-            }
-        }
-    });
+        .run(tauri::generate_context!())
+        .expect("failed to run ResumeFlow AI");
 }

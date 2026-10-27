@@ -91,11 +91,52 @@ def create_job(db: Session, payload: dict[str, Any], *, confirm_duplicate: bool 
         raw_jd=raw_jd,
         jd_hash=fingerprint,
         warnings_json=warnings,
-        **{k: (payload.get(k) or None) for k in ("company", "title", "recruiter", "rate", "location", "employment_type", "notes")},
+        **{k: (payload.get(k) or None) for k in ("company", "title", "recruiter", "rate", "location", "employment_type", "notes", "source", "site")},
     )
+    if not job.title and payload.get("page_title"):
+        # A captured page's title ("Senior Engineer - Acme | LinkedIn") until analysis finds the real one.
+        job.title = re.split(r"\s+[|\-–—]\s+", payload["page_title"].strip())[0][:200] or None
     db.add(job)
     db.commit()
     return job
+
+
+def same_url_history(db: Session, normalized_url: str, exclude_job_id: str | None = None) -> list[dict[str, Any]]:
+    """Earlier jobs with the same posting URL and their applications (v2.0): shown when a posting is captured again.
+    Saving it again stays allowed."""
+    from resumeflow.db.models import Application
+
+    if not normalized_url:
+        return []
+    jobs = db.scalars(select(Job).where(Job.normalized_url == normalized_url, Job.id != (exclude_job_id or "")).order_by(Job.created_at.desc()))
+    history = []
+    for job in jobs:
+        applications = db.execute(
+            select(Application, Candidate.full_name)
+            .join(Candidate, Candidate.id == Application.candidate_id)
+            .where(Application.job_id == job.id)
+            .order_by(Application.created_at.desc())
+        ).all()
+        history.append(
+            {
+                "job_id": job.id,
+                "title": job.title,
+                "company": job.company,
+                "status": job.status,
+                "created_at": job.created_at,
+                "applications": [
+                    {
+                        "application_id": app.id,
+                        "candidate_name": name,
+                        "status": app.status,
+                        "application_date": app.application_date,
+                        "submitted_at": app.submitted_at,
+                    }
+                    for app, name in applications
+                ],
+            }
+        )
+    return history
 
 
 def get_job(db: Session, job_id: str) -> Job:
@@ -729,7 +770,7 @@ def analyze_job(db: Session, ai: AIService | None, job: Job, *, use_cache: bool 
             if confidence.sufficient:
                 requirements = local
                 source = "heuristic"
-            elif ai is not None and ai.available():
+            elif not settings.local_analysis_only and ai is not None and ai.available():
                 try:
                     requirements = ai.run(
                         operation=GenerationOperation.JD_ANALYSIS,
@@ -752,10 +793,11 @@ def analyze_job(db: Session, ai: AIService | None, job: Job, *, use_cache: bool 
                 requirements = local
                 source = "heuristic"
                 reason = "; ".join(confidence.reasons[:3]) or "the JD structure was ambiguous"
+                why = "AI analysis is off (Settings: local analysis only)" if settings.local_analysis_only else "OpenAI was unavailable"
                 _analysis_warning(
                     job,
                     "low_confidence_local_analysis",
-                    f"Generation continued with fast local JD extraction, but OpenAI was unavailable for an ambiguous JD ({reason}).",
+                    f"Generation continued with fast local JD extraction; {why} for an ambiguous JD ({reason}). Check the requirements.",
                 )
         requirements = _clean_requirements(requirements)
         job.parsed_requirements_json = requirements.model_dump(mode="json")
@@ -837,6 +879,8 @@ def job_detail(db: Session, job: Job) -> dict[str, Any]:
         "notes": job.notes,
         "raw_jd": job.raw_jd,
         "normalized_url": job.normalized_url,
+        "source": job.source,  # v2.0: "extension" for jobs captured in Chrome
+        "site": job.site,
         "requirements": job.parsed_requirements_json,
         "requirements_source": job.requirements_source,
         "warnings": job.warnings_json or [],

@@ -1,9 +1,19 @@
-import { isTauri } from "@/lib/backend";
+import { extensionChrome, isTauri } from "@/lib/backend";
 
 let permissionRequested = false;
 
-/** Native desktop notification; browser development remains a silent no-op. */
+/** Native desktop notification (Tauri) or a Chrome notification (extension); browser development stays silent. */
 export async function sendQueueIdleNotification(): Promise<boolean> {
+  const chrome = extensionChrome();
+  if (chrome?.notifications) {
+    chrome.notifications.create({
+      type: "basic",
+      iconUrl: "/icons/icon128.png",
+      title: "ResumeFlow AI queue finished",
+      message: "All queued work has finished. No work remains.",
+    });
+    return true;
+  }
   if (!isTauri()) return false;
 
   try {

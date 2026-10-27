@@ -4,9 +4,17 @@ A local-first Windows desktop app that matches job descriptions to verified cand
 produces one truthful tailored resume and cover letter per application, with human review before
 anything is exported.
 
-**Status: 1.8.5. Milestones 1–8 are implemented, plus batch jobs** (save many job descriptions now and
-generate tailored documents for all of them later with one click) **and templates copied from existing resumes.** See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)
-for the architecture, API, test strategy and remaining risks.
+**Status: 2.0.0 — one backend, two front ends.**
+
+| Part | What it is |
+|---|---|
+| **Backend** (`backend/`) | The local service on 127.0.0.1:8765 that holds all data and does the work. Starts at sign-in (`scripts\backend\install-startup.ps1`) or with whichever front end opens first, and keeps running. |
+| **Desktop app** (`desktop/`) | The full workspace below: jobs (pasted or batch), candidates, applications, settings, analytics. |
+| **Chrome extension** (`extension/`) | Next to the job posting: capture it, rank candidates locally, generate with **one** AI request, fill application forms (one AI request per page for free-text answers), and save the confirmation screen after you submit. Set up with [extension/README.md](extension/README.md). |
+
+Use either front end on its own or both together; they show the same data. Requirements:
+[docs/ResumeFlow_AI_Requirements_v2.1.docx](docs/ResumeFlow_AI_Requirements_v2.1.docx). See
+[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for the architecture, API, test strategy and remaining risks.
 
 ## How to use it
 
@@ -113,8 +121,10 @@ npm install
 
 | Task | Command |
 |---|---|
-| Browser mode (no Rust): sidecar + UI at http://127.0.0.1:1420 | `node scripts/dev-browser.mjs` |
-| Desktop app (needs Rust + VS Build Tools) | `cd desktop; npm run tauri dev` |
+| Browser mode (no Rust): dev backend on port 8767 + UI at http://127.0.0.1:1420 | `node scripts/dev-browser.mjs` |
+| Desktop app (needs Rust + VS Build Tools); debug builds use port 8766 and `.dev-data` | `cd desktop; npm run tauri dev` |
+| Shared backend on its own (port 8765, real data) | `scripts\backend\start-backend.ps1` |
+| Extension workspace page | `cd desktop; npm run build:extension` |
 | Backend tests (182) | `cd backend; .venv\Scripts\python -m pytest` |
 | Frontend tests (71) + type-check | `cd desktop; npm test; npm run typecheck` |
 | Windows installer | `cd desktop; npm run release` |
@@ -134,6 +144,7 @@ In PowerShell, use `npm.cmd` if script execution is disabled on your machine.
 | `backend/resumeflow/domain/` | Profile, requirements, content schemas, skills vocabulary, status transitions |
 | `backend/resumeflow/migrations/` | Alembic migrations (run automatically on launch) |
 | `desktop/src/` | React UI: pages, components, design system |
-| `desktop/src-tauri/` | Tauri shell: supervises the sidecar (Job Object, restart), hands the UI its URL and token |
-| `scripts/` | `dev-browser.mjs` (dev), `build-sidecar.mjs` (freeze + smoke test) |
+| `desktop/src-tauri/` | Tauri shell: connects to the shared backend (starts it if nothing answers), hands the UI its URL and saved token |
+| `extension/` | Chrome extension (Manifest V3): side panel, options, page scripts; `workspace/` is built from `desktop/` |
+| `scripts/` | `dev-browser.mjs` (dev), `build-sidecar.mjs` (freeze + smoke test), `backend/` (start, start at sign-in, pair) |
 | `samples/` | Fictional sample resumes and job descriptions |

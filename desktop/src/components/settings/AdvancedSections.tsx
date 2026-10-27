@@ -44,6 +44,7 @@ export function AiOptionsSection({ settings }: { settings: AppSettings }) {
     <Section title="AI assistance" description="Where AI is used. Without an API key, everything falls back to offline, deterministic processing.">
       {(
         [
+          ["local_analysis_only", "Analyze jobs locally only", "Job analysis and candidate ranking never call the AI. Each application then makes one AI request for the resume and cover letter (plus one per form page with free-text questions)."],
           ["ai_extract_on_import", "Extract resumes with AI", "Structured extraction of roles, bullets and skills from any resume layout. Check the result against the original resume."],
           ["semantic_matching", "Semantic skill matching", "For the top candidates, asks AI whether the candidate's experience demonstrates a required skill under a different name. Only accepted when it cites real evidence."],
         ] as const

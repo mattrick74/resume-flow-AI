@@ -99,25 +99,10 @@ describe("instructions for the AI writer", () => {
     expect(calls.find((c) => c.path === "/applications/a1/generate")?.body).toEqual({ document: "both", section: "all", instructions: "Emphasise Azure." });
   });
 
-  it("shows why an application was held instead of exported", async () => {
-    mockBackend({
-      override: (call) =>
-        call.path === "/applications/a1"
-          ? json(applicationDetail({ status: "AWAITING_REVIEW", error: "Not exported automatically: the checks found errors. Review them, then approve and export." }))
-          : undefined,
-    });
-    renderApp("/applications/a1");
-    expect(await screen.findByText(/Not exported automatically/)).toBeInTheDocument();
-  });
-});
-
-describe("settings", () => {
-  it("chooses what happens after generating and saves default instructions", async () => {
+  it("chooses the files to save and saves default instructions", async () => {
     const { calls } = mockBackend();
     renderApp("/settings");
-    await userEvent.selectOptions(await screen.findByLabelText("After generating"), "review");
-    await waitFor(() => expect(calls.some((c) => c.method === "PATCH" && (c.body as { export_mode?: string }).export_mode === "review")).toBe(true));
-    await userEvent.selectOptions(screen.getByLabelText("Files to save"), "pdf_docx");
+    await userEvent.selectOptions(await screen.findByLabelText("Files to save"), "pdf_docx");
     await waitFor(() => expect(calls.some((c) => c.method === "PATCH" && (c.body as { output_formats?: string }).output_formats === "pdf_docx")).toBe(true));
     await userEvent.type(screen.getByLabelText("Instructions for the AI writer"), "Use US spelling.");
     await userEvent.click(screen.getByRole("button", { name: "Save instructions" }));

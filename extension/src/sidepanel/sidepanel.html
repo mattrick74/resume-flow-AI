@@ -1,0 +1,97 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>ResumeFlow AI</title>
+    <link rel="stylesheet" href="sidepanel.css" />
+  </head>
+  <body>
+    <header class="bar">
+      <img src="../../icons/icon32.png" alt="" width="20" height="20" />
+      <strong>ResumeFlow AI</strong>
+      <span id="status" class="pill" role="status">Checking…</span>
+    </header>
+
+    <main id="app">
+      <section id="connection" class="card warn" hidden>
+        <p id="connection-message"></p>
+        <div class="row">
+          <button id="open-options" type="button">Open options</button>
+          <button id="retry-status" type="button" class="ghost">Check again</button>
+        </div>
+      </section>
+
+      <section class="card">
+        <div class="section-head">
+          <h2>This page</h2>
+          <button id="open-workspace" type="button" class="link">Open workspace</button>
+        </div>
+        <p id="tab-title" class="muted clip"></p>
+        <div class="row">
+          <button id="capture" type="button" class="primary">Capture job</button>
+          <button id="answer" type="button" disabled>Answer questions</button>
+          <button id="capture-now" type="button" disabled title="Save a screenshot of this page as the confirmation">Capture now</button>
+        </div>
+        <label class="inline">
+          Application for this tab
+          <select id="application-select"><option value="">—</option></select>
+        </label>
+        <p id="page-message" class="message" role="alert" hidden></p>
+      </section>
+
+      <section id="captured" class="card" hidden>
+        <div class="section-head">
+          <h2>Captured job</h2>
+          <span id="read-by" class="muted small"></span>
+        </div>
+        <div id="same-url" class="note" hidden></div>
+        <label>Title <input id="job-title" maxlength="200" /></label>
+        <label>Company <input id="job-company" maxlength="200" /></label>
+        <label>Location <input id="job-location" maxlength="200" /></label>
+        <label>URL <input id="job-url" maxlength="2000" /></label>
+        <label>Description <span id="jd-count" class="muted small"></span>
+          <textarea id="job-description" rows="9" maxlength="100000"></textarea>
+        </label>
+        <p id="jd-warning" class="message" hidden>The description looks short. Select the job description on the page and capture again.</p>
+        <div class="row"><button id="save-job" type="button" class="primary">Save &amp; rank candidates</button></div>
+      </section>
+
+      <section id="candidates" class="card" hidden>
+        <div class="section-head">
+          <h2>Best candidate</h2>
+          <span id="analysis-source" class="muted small"></span>
+        </div>
+        <div id="job-warnings"></div>
+        <div id="match-list" class="list" role="radiogroup" aria-label="Candidates"></div>
+        <label id="override-wrap" hidden>Why this candidate instead of the top match?
+          <input id="override-reason" maxlength="1000" />
+        </label>
+        <div class="row"><button id="generate" type="button" class="primary">Generate resume &amp; cover letter</button></div>
+      </section>
+
+      <section id="application" class="card" hidden>
+        <div class="section-head">
+          <h2 id="app-heading">Application</h2>
+          <span id="app-status" class="pill"></span>
+        </div>
+        <p id="app-subtitle" class="muted"></p>
+        <progress id="app-progress" max="100" hidden></progress>
+        <p id="app-error" class="message" hidden></p>
+        <div id="files" class="list"></div>
+        <div id="submission" class="note" hidden></div>
+      </section>
+
+      <section id="answers" class="card" hidden>
+        <div class="section-head">
+          <h2>Form answers</h2>
+          <span id="answers-summary" class="muted small"></span>
+        </div>
+        <p class="muted small">Review every answer before you submit. Fields outlined in amber need you.</p>
+        <div id="needs-list" class="list"></div>
+      </section>
+    </main>
+
+    <script type="module" src="sidepanel.js"></script>
+  </body>
+</html>

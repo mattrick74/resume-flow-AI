@@ -59,7 +59,7 @@ export function BackendGate({ children }: { children: ReactNode }) {
         <h1 className="text-base font-semibold">{failed ? "The ResumeFlow engine didn’t start" : "Starting ResumeFlow engine…"}</h1>
         <p className="mt-2 text-sm text-muted-foreground" role="status">
           {failed
-            ? "The local service that stores your data isn’t responding. Check that no other copy of ResumeFlow is running, then retry. Details are in the backend log in your ResumeFlowAI data folder."
+            ? "The local service that stores your data (shared with the Chrome extension) isn’t responding. Restart it, or retry. Details are in the backend log in your ResumeFlowAI data folder."
             : "Opening the local database and applying any updates."}
         </p>
         {failed && (

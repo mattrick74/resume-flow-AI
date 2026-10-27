@@ -1,7 +1,7 @@
 {
   "name": "resumeflow-desktop",
   "private": true,
-  "version": "1.8.6",
+  "version": "2.0.0",
   "type": "module",
   "scripts": {
     "dev": "vite",
@@ -11,7 +11,8 @@
     "test:watch": "vitest",
     "tauri": "tauri",
     "build:sidecar": "node ../scripts/build-sidecar.mjs",
-    "release": "tauri build --config src-tauri/tauri.release.conf.json"
+    "release": "tauri build --config src-tauri/tauri.release.conf.json",
+    "build:extension": "tsc --noEmit && vite build --mode extension"
   },
   "dependencies": {
     "@fontsource-variable/inter": "^5.3.0",

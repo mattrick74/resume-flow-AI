@@ -214,6 +214,9 @@ class Job(TimestampMixin, Base):
     location: Mapped[str | None] = mapped_column(String(200))
     employment_type: Mapped[str | None] = mapped_column(String(100))
     notes: Mapped[str | None] = mapped_column(Text)
+    # v2.0: where the job came from ("manual", "batch" or "extension") and, for captured jobs, the job site.
+    source: Mapped[str | None] = mapped_column(String(20))
+    site: Mapped[str | None] = mapped_column(String(100))
     raw_jd: Mapped[str] = mapped_column(Text, nullable=False)
     jd_hash: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
     parsed_requirements_json: Mapped[dict[str, Any] | None] = mapped_column(JSON)
@@ -423,3 +426,34 @@ class Setting(Base):
     updated_at: Mapped[datetime] = mapped_column(
         UTCDateTime, default=utcnow, onupdate=utcnow, nullable=False
     )
+
+
+class AnswerBankEntry(TimestampMixin, Base):
+    """A saved answer to a common application question (v2.0): per candidate, or for everyone when candidate_id is
+    null. Used to fill application forms without AI."""
+
+    __tablename__ = "answer_bank"
+    __table_args__ = (UniqueConstraint("candidate_id", "key"),)
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    candidate_id: Mapped[str | None] = mapped_column(ForeignKey("candidates.id", ondelete="CASCADE"), index=True)
+    key: Mapped[str] = mapped_column(String(80), nullable=False)
+    question: Mapped[str | None] = mapped_column(Text)
+    answer: Mapped[str] = mapped_column(Text, nullable=False)
+
+
+class ApplicationAnswer(Base):
+    """An answer the extension filled in on an application form (v2.0), and where it came from."""
+
+    __tablename__ = "application_answers"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    application_id: Mapped[str] = mapped_column(ForeignKey("applications.id", ondelete="CASCADE"), nullable=False, index=True)
+    page_url: Mapped[str | None] = mapped_column(Text)
+    field_id: Mapped[str] = mapped_column(String(300), nullable=False)
+    label: Mapped[str] = mapped_column(Text, nullable=False)
+    field_type: Mapped[str] = mapped_column(String(30), nullable=False)
+    answer: Mapped[str | None] = mapped_column(Text)
+    source: Mapped[str] = mapped_column(String(20), nullable=False)  # profile | answer_bank | ai | needs_input | file
+    note: Mapped[str | None] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime, default=utcnow, nullable=False)

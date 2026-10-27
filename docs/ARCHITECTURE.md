@@ -1,7 +1,8 @@
 # ResumeFlow AI — Architecture
 
-Implements `ResumeFlow_AI_Complete_Requirements.docx` (PRD v1.0). Version 1.8.5. The as-built requirements are in
-[ResumeFlow_AI_Requirements_v1.8.4.docx](ResumeFlow_AI_Requirements_v1.8.4.docx).
+Implements `ResumeFlow_AI_Complete_Requirements.docx` (PRD v1.0). Version 2.0.0: one local backend with two separate
+front ends (desktop app and Chrome extension), per [ResumeFlow_AI_Requirements_v2.1.docx](ResumeFlow_AI_Requirements_v2.1.docx)
+(section 4i below). Earlier as-built requirements: [ResumeFlow_AI_Requirements_v1.8.4.docx](ResumeFlow_AI_Requirements_v1.8.4.docx).
 
 ## 1. Architecture
 
@@ -258,6 +259,56 @@ candidate's work: every new fact comes from the operator (`services/experience.p
   gaps, answers, drafted/approved bullets, paused/resumed jobs, re-scored matches, time to answer and coverage before/after.
 - **Writing (GEN-02/05/06/09):** `settings.bullet_density` (concise / standard / detailed) sets bullets per role; the prompt asks for
   varied verbs, natural job terminology, no stuffing, no repeats, no copied job-description sentences.
+
+## 4i. Local backend + Chrome extension (2.0.0)
+
+- **Process (BE-01/02/03):** run on its own (`resumeflow-backend` / `python -m resumeflow`, no `--parent-pid`) the backend
+  listens on 127.0.0.1:8765, exits at once if one already answers there, and uses one saved token
+  (`%LOCALAPPDATA%\ResumeFlowAI\api_token`, `pairing.load_or_create_token`). `resumeflow-backend pair` writes a 6-digit
+  code (hash only, 5 minutes, 5 attempts) that `POST /pair` (unauthenticated) exchanges for the token; `show-token` prints it.
+  CORS also allows `chrome-extension://<config.extension_ids>` (the extension's ID is fixed by the `key` in its manifest).
+  Launchers: `scripts/backend/start-backend.ps1`, `install-startup.ps1` (Startup shortcut), `pair.cmd`.
+- **Two front ends, one backend (BE-12):** the desktop shell (`desktop/src-tauri/src/sidecar.rs`) no longer starts a
+  private backend. It checks `GET /health` on 127.0.0.1:8765, reads the saved token from `<data dir>/api_token`
+  (`%LOCALAPPDATA%\ResumeFlowAI`, or `RESUMEFLOW_DATA_DIR`), and only when nothing answers starts the bundled backend
+  without a session token, detached, so it keeps running after the window closes; `restart_backend` starts it again
+  if it stopped answering. Debug builds use port 8766 with the repo's `.dev-data`; `scripts/dev-browser.mjs` uses 8767,
+  so development never touches the real data or the shared service.
+- **Local analysis (BE-04):** `settings.local_analysis_only` (default on): `analyze_job` never makes the `JD_ANALYSIS` fallback
+  request (the heuristic result is kept with a `low_confidence_local_analysis` warning) and the semantic match never runs.
+- **One request (BE-05):** with both documents requested, `generate_documents` makes one `APPLICATION_DOCUMENTS` request
+  (`AIApplicationDocuments {resume: AIResumeTailoring, cover_letter: AICoverLetter}`, 15k output tokens): the resume
+  instructions and input as they are, then the cover-letter instructions, candidate evidence sent once (cached prefix).
+  `resume_request` / `resume_from_result` and `cover_from_result` are the unchanged halves of `ai_resume` / `ai_cover_letter`.
+  Transient errors: the in-place retries and queue backoff apply to that one request; other errors: profile-based documents
+  for both, no second request. Regenerating one document uses that document's own request.
+- **Capture (BE-06):** `POST /jobs` takes `source`, `site` (stored on `jobs`, migration 0010) and `page_title` (a title
+  fallback) and returns `same_url` (earlier jobs and applications for the posting); `GET /jobs/by-url?url=` answers the same
+  before saving. Repeated postings are still saved.
+- **Files (BE-07):** `GET /applications/{id}/files/{resume|cover_letter|submission_screenshot}?format=` returns the latest
+  exported file (for attaching to forms).
+- **Answers (BE-08/09, `services/answers.py`):** `answer_bank` (per candidate or global; standard keys plus `q:<hash>` for
+  questions saved from a form) with `GET/PUT/DELETE /answer-bank`. `POST /applications/{id}/answers` answers a page's fields
+  in order: consent/certification → left for the user; EEO keys → saved answer, else a "decline" option, else left;
+  profile facts (name, contact, links, location, current employer/title, education, total years, years with a skill from
+  role dates); answer bank; free-text questions → one `QUESTION_ANSWERING` request (analysis model, `AIFormAnswers`) for the
+  page, reusing earlier answers to the same question; anything else → `needs_input`. Choices only from the page's options
+  (`choose_option`, numeric ranges). Stored in `application_answers` and written to `Answers.json`.
+- **Submission (BE-10, `services/submission.py`):** `POST /applications/{id}/submission` (multipart PNG ≤ 15 MB) saves
+  `Submission_<date>_<time>.png` in the application folder (document type `submission_screenshot`, format `png`), updates
+  metadata.json (`submission`) and records SUBMITTED (operator action; while the export is still running it is applied when
+  the export finishes, `apply_pending_submission`). `DELETE …/submission/{doc_id}` removes it and, with none left, returns
+  the application to EXPORTED.
+- **Extension (`extension/`):** Manifest V3. The service worker (`src/background.js`) is the only backend caller; the side
+  panel and options page message it. Page scripts are injected on the user's click into all frames: `capture.js` (site
+  readers for 10 job sites, schema.org JobPosting, main text or the selection; canonical LinkedIn/Indeed URLs),
+  `form.js` (scan with labels/legends/options incl. open shadow roots; fill via native value setters and input/change
+  events; never ticks consent boxes; attaches PDFs through `DataTransfer`), `watch.js` (after a submit click on a linked tab,
+  2 minutes of confirmation-text / confirmation-URL detection; the service worker re-injects it after navigation and
+  captures with `tabs.captureVisibleTab`). The workspace page is the desktop React app built with
+  `npm run build:extension` (relative base, extension transport in `lib/backend.ts` reading the paired token from
+  `chrome.storage.local`). `optional_host_permissions: <all_urls>` is requested once (needed for injection after navigation
+  and for tab capture); `host_permissions` cover only the loopback backend.
 
 ## 5. Data model
 

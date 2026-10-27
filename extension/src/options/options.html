@@ -1,0 +1,62 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>ResumeFlow AI — Options</title>
+    <link rel="stylesheet" href="../sidepanel/sidepanel.css" />
+    <style>
+      body { max-width: 640px; margin: 0 auto; }
+      main { padding: 16px; }
+      code { font-family: Consolas, ui-monospace, monospace; background: var(--bg); padding: 1px 4px; border-radius: 4px; }
+      ol { margin: 0; padding-left: 18px; display: grid; gap: 4px; }
+    </style>
+  </head>
+  <body>
+    <header class="bar">
+      <img src="../../icons/icon32.png" alt="" width="20" height="20" />
+      <strong>ResumeFlow AI — Options</strong>
+      <span id="status" class="pill" role="status">Checking…</span>
+    </header>
+    <main>
+      <section class="card">
+        <h2>1. Start the backend</h2>
+        <p>The extension works with the ResumeFlow backend on this PC. It starts at Windows sign-in once installed
+          (<code>scripts\backend\install-startup.ps1</code>), or run <code>scripts\backend\start-backend.ps1</code>.</p>
+        <label>Backend address <input id="base-url" placeholder="http://127.0.0.1:8765" /></label>
+      </section>
+
+      <section class="card">
+        <h2>2. Pair</h2>
+        <ol>
+          <li>Run <code>scripts\backend\pair.cmd</code> (or <code>resumeflow-backend pair</code>). It shows a 6-digit code for 5 minutes.</li>
+          <li>Enter the code here.</li>
+        </ol>
+        <div class="row">
+          <input id="code" inputmode="numeric" maxlength="6" placeholder="6-digit code" style="max-width: 160px" />
+          <button id="pair" type="button" class="primary">Pair</button>
+        </div>
+        <details>
+          <summary class="small">Or paste the token</summary>
+          <p class="small muted">From <code>resumeflow-backend show-token</code>.</p>
+          <div class="row"><input id="token" type="password" autocomplete="off" /><button id="save-token" type="button">Save token</button></div>
+        </details>
+        <p id="pair-message" class="message" role="alert" hidden></p>
+      </section>
+
+      <section class="card">
+        <h2>3. Allow on job sites</h2>
+        <p>To read job postings, fill application forms and capture the confirmation screen, ResumeFlow needs access to
+          the pages you use it on. It only acts when you click it, and never submits anything.</p>
+        <div class="row"><button id="allow" type="button">Allow on job sites</button><span id="allow-state" class="muted small"></span></div>
+      </section>
+
+      <section class="card">
+        <h2>Workspace</h2>
+        <p>Candidates, settings, the answer bank's saved answers, applications and analytics.</p>
+        <div class="row"><button id="workspace" type="button">Open workspace</button></div>
+      </section>
+    </main>
+    <script type="module" src="options.js"></script>
+  </body>
+</html>

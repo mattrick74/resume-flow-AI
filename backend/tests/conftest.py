@@ -46,7 +46,7 @@ def client(anon_client) -> TestClient:
     # automatically, profiles without verification, ask about missing job skills first).
     anon_client.patch(
         "/settings",
-        json={"export_mode": "review", "require_verification": True, "gap_confirmation": "off", "hard_requirement_gates": True},
+        json={"export_mode": "review", "require_verification": True, "gap_confirmation": "off", "hard_requirement_gates": True, "local_analysis_only": False},
     )
     return anon_client
 

@@ -42,8 +42,7 @@ def test_written_documents_are_exported_straight_away(client, setup, secret_stor
     drain(client)
     done = client.get(f"/applications/{app['id']}").json()
     assert done["status"] == "EXPORTED" and done["approved_by"] == "automatic" and not done["error"]
-    writing = sorted(c["schema"] for c in fake_ai.calls)
-    assert writing == ["AICoverLetter", "AIResumeTailoring"]  # the two writing calls only: no fact-check
+    assert [c["schema"] for c in fake_ai.calls] == ["AIApplicationDocuments"]  # one request for both documents
     body = " ".join(p["text"] for p in done["cover_letter"]["content"]["paragraphs"])
     assert body == " ".join(letter)  # the cover letter exactly as the API returned it
     assert {f["type"] for f in done["files"] if f["exists"]} >= {"resume", "cover_letter", "metadata"}
@@ -77,42 +76,23 @@ def test_pdf_only_saves_no_word_files(client, setup, monkeypatch):
     assert any(f["format"] == "docx" and f["exists"] for f in again["files"])
 
 
-def test_resume_and_cover_letter_are_written_at_the_same_time(client, setup, secret_store, fake_ai):
-    import threading
-    import time
+def test_resume_and_cover_letter_come_from_one_request(client, setup, secret_store, fake_ai):
+    """v2.0 G4: one AI request per application writes both documents (and it is the only request)."""
+    from resumeflow.db.models import GenerationRun
 
     secret_store.set("openai_api_key", "sk-test-key-123456")
-    inside: list[str] = []
-    overlap = threading.Event()
-    lock = threading.Lock()
-
-    def slow(name, payload):
-        def handler(text):
-            with lock:
-                inside.append(name)
-                if len(inside) == 2:
-                    overlap.set()
-            time.sleep(0.3)
-            with lock:
-                inside.remove(name)
-            return payload(text) if callable(payload) else payload
-
-        return handler
-
-    fake_ai.on("AIResumeTailoring", slow("resume", _tailoring("Northwind Analytics Inc")))
-    fake_ai.on("AICoverLetter", slow("cover", {"greeting": "Dear team,", "paragraphs": [{"text": "I am applying to Acme Data Co.", "evidence_ids": []}], "closing": "Sincerely,"}))
-    fake_ai.on("AIClaimReview", lambda text: {"issues": []})
+    fake_ai.on("AIResumeTailoring", _tailoring("Northwind Analytics Inc"))
+    fake_ai.on("AICoverLetter", lambda text: {"greeting": "Dear team,", "paragraphs": [{"text": "I am applying to Acme Data Co.", "evidence_ids": []}], "closing": "Sincerely,"})
     app = create(client, setup).json()
     drain(client)
-    assert overlap.is_set()  # both requests were in flight together
-    assert client.get(f"/applications/{app['id']}").json()["resume"]["mode"] == "ai"
-
-
-def test_review_mode_waits_for_approval(client, setup):
-    client.patch("/settings", json={"export_mode": "review"})
-    app = create(client, setup).json()
-    drain(client)
-    assert client.get(f"/applications/{app['id']}").json()["status"] == "AWAITING_REVIEW"
+    done = client.get(f"/applications/{app['id']}").json()
+    assert done["resume"]["mode"] == "ai" and done["cover_letter"]["mode"] == "ai"
+    assert done["cover_letter"]["content"]["paragraphs"][0]["text"] == "I am applying to Acme Data Co."
+    with client.app.state.session_factory() as db:
+        runs = [r.operation for r in db.query(GenerationRun).filter(GenerationRun.application_id == app["id"])]
+    assert runs == ["application_documents"]
+    call = fake_ai.calls[-1]
+    assert "PART 1" in call["instructions"] and "PART 2" in call["instructions"]
 
 
 def test_operator_instructions_reach_the_writer(client, setup, secret_store, fake_ai):
@@ -125,9 +105,8 @@ def test_operator_instructions_reach_the_writer(client, setup, secret_store, fak
     app = create(client, setup, instructions="Lead with the Spark and Airflow work.").json()
     assert app["instructions"] == "Lead with the Spark and Airflow work."
     drain(client)
-    writing = [c for c in fake_ai.calls if c["schema"] in {"AIResumeTailoring", "AICoverLetter"}]
+    writing = [c for c in fake_ai.calls if c["schema"] in {"AIApplicationDocuments", "AIResumeTailoring", "AICoverLetter"}]
     assert writing and all("Use US spelling" in c["instructions"] and "Lead with the Spark" in c["instructions"] for c in writing)
-    assert all("rules above, which always win" in c["instructions"] for c in writing)
 
     client.post(f"/applications/{app['id']}/generate", json={"document": "resume", "instructions": "Emphasise AWS."})
     drain(client)

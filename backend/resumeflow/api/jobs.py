@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import logging
 import time
-from typing import Any
+from typing import Any, Literal
 
 from fastapi import APIRouter, Request, Response
 from pydantic import BaseModel, ConfigDict, Field
@@ -36,6 +36,10 @@ class JobCreate(BaseModel):
     notes: str | None = Field(default=None, max_length=5000)
     confirm_duplicate: bool = False
     analyze: bool = True
+    # v2.0 Chrome extension capture: where it came from, the job site, and the page title (a title fallback).
+    source: Literal["manual", "extension"] = "manual"
+    site: str | None = Field(default=None, max_length=100)
+    page_title: str | None = Field(default=None, max_length=300)
 
 
 class JobItem(BaseModel):
@@ -168,7 +172,18 @@ def create_job(body: JobCreate, db: DbSession, ai: AI) -> dict[str, Any]:
     job = service.create_job(db, body.model_dump(exclude={"confirm_duplicate", "analyze"}), confirm_duplicate=body.confirm_duplicate)
     if body.analyze:
         _analyze_and_match(db, ai, job)
-    return service.job_detail(db, job)
+    # Earlier jobs with the same posting URL, and who they were generated for (saving again stays allowed).
+    return {**service.job_detail(db, job), "same_url": service.same_url_history(db, job.normalized_url, exclude_job_id=job.id)}
+
+
+@router.get("/by-url")
+def jobs_by_url(url: str, db: DbSession) -> dict[str, Any]:
+    """The jobs and applications already saved for a posting URL (the extension checks before saving)."""
+    try:
+        normalized = service.normalize_url(url)
+    except AppError:
+        return {"normalized_url": None, "same_url": []}
+    return {"normalized_url": normalized, "same_url": service.same_url_history(db, normalized)}
 
 
 @router.post("/batch", status_code=201)

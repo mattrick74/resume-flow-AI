@@ -18,3 +18,6 @@ desktop/src-tauri/gen/
 
 # Local development data (SQLite, logs, originals)
 .dev-data/
+
+# Chrome extension: the workspace page built from desktop/ (npm run build:extension)
+extension/workspace/

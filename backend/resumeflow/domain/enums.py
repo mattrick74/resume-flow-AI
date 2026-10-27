@@ -61,6 +61,9 @@ class DocumentType(StrEnum):
     JOB_DESCRIPTION = "job_description"
     JOB_URL = "job_url"
     METADATA = "metadata"
+    # v2.0 (Chrome extension): the confirmation screen captured after the user submitted, and the answers filled in.
+    SUBMISSION_SCREENSHOT = "submission_screenshot"
+    ANSWERS = "answers"
 
 
 class DocumentFormat(StrEnum):
@@ -69,6 +72,7 @@ class DocumentFormat(StrEnum):
     PDF = "pdf"
     TXT = "txt"
     JSON = "json"
+    PNG = "png"
 
 
 class DocumentStatus(StrEnum):
@@ -108,6 +112,9 @@ class GenerationOperation(StrEnum):
     # Historical operation value retained for existing GenerationRun analytics. New placement decisions are returned
     # by RESUME_GENERATION instead of using a separate request.
     SKILL_EXPANSION = "skill_expansion"
+    # v2.0: the resume and the cover letter written by one request, and answers to application-form questions.
+    APPLICATION_DOCUMENTS = "application_documents"
+    QUESTION_ANSWERING = "question_answering"
 
 
 class SkillDecision(StrEnum):

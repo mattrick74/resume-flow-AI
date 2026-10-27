@@ -47,6 +47,8 @@ export interface AppSettings {
   daily_budget_usd: number | null;
   monthly_budget_usd: number | null;
   ai_extract_on_import: boolean;
+  /** v2.0: job analysis and ranking never call the AI. */
+  local_analysis_only: boolean;
   semantic_matching: boolean;
   match_weights: MatchWeights;
   /** A built-in template ("professional", "compact") or "custom:<id>" for one copied from a resume. */
@@ -872,4 +874,19 @@ export interface PdfConverterStatus {
   libreoffice_path: string | null;
   word_available: boolean;
   active: "libreoffice" | "word" | null;
+}
+
+/** v2.0 answer bank: saved answers the extension fills into application forms. */
+export interface AnswerBankEntry {
+  id: string;
+  candidate_id: string | null;
+  key: string;
+  question: string | null;
+  answer: string;
+  updated_at: string;
+}
+
+export interface AnswerBank {
+  standard: { key: string; label: string; eeo?: boolean }[];
+  entries: AnswerBankEntry[];
 }

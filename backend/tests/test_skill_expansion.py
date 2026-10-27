@@ -367,7 +367,7 @@ def test_ai_bullets_are_checked_and_inserted_even_when_the_writer_drops_them(cli
     assert app["resume"]["mode"] == "ai"
     assert app["resume"]["issue_counts"]["error"] == 0, app["resume"]["issues"]
     schemas = [c["schema"] for c in fake_ai.calls]
-    assert schemas.count("AIResumeTailoring") == 1
+    assert schemas == ["AIApplicationDocuments"]  # one request writes both documents, placements included
     assert "AISkillExpansion" not in schemas  # placement and writing share one response
 
     inserted = _assert_distributed(app, jordan["profile"])

@@ -18,6 +18,7 @@ from datetime import date
 from typing import Any
 
 from resumeflow.domain.content import (
+    AIApplicationDocuments,
     AICoverLetter,
     AINewBullet,
     AIResumeTailoring,
@@ -1001,20 +1002,17 @@ def operator_notes(base: str, notes: str | None) -> str:
     )
 
 
-def ai_resume(
-    ai: AIService,
+def resume_request(
     snap: dict[str, Any],
     req: JobRequirements,
     company: str | None,
     raw_jd: str,
-    application_id: str,
-    previous: ResumeContent | None,
-    section: Section,
-    instructions: str = "",
     density: str = "standard",
     semantic: dict[str, str] | None = None,
     exclude: set[str] | frozenset[str] = frozenset(),
-) -> tuple[ResumeContent, list[str], dict[str, Any], list[str]]:
+) -> dict[str, str]:
+    """The resume request: instructions (before the operator's notes), input and the cached candidate prefix. Used by
+    the resume-only request and by the single request that writes both documents (v2.0)."""
     missing_skills = expansion_candidates(snap, req, exclude)
     hints = expansion_hints(snap, req, semantic, exclude)
     candidate_prefix = "\n\n".join(
@@ -1024,11 +1022,10 @@ def ai_resume(
         ]
     )
 
-    result = ai.run(
-        operation=GenerationOperation.RESUME_GENERATION,
-        role="writing",
-        instructions=operator_notes(resume_instructions(density) + "\n\n" + EXPANSION_INSTRUCTIONS, instructions),
-        input_text="\n\n".join(
+    return {
+        "instructions": resume_instructions(density) + "\n\n" + EXPANSION_INSTRUCTIONS,
+        "cache_prefix": candidate_prefix,
+        "input_text": "\n\n".join(
             [
                 _job_brief(req, company, raw_jd),
                 wrap(
@@ -1053,14 +1050,52 @@ def ai_resume(
                 *expansion_prompt_sections(snap, missing_skills, hints),
             ]
         ),
+    }
+
+
+def ai_resume(
+    ai: AIService,
+    snap: dict[str, Any],
+    req: JobRequirements,
+    company: str | None,
+    raw_jd: str,
+    application_id: str,
+    previous: ResumeContent | None,
+    section: Section,
+    instructions: str = "",
+    density: str = "standard",
+    semantic: dict[str, str] | None = None,
+    exclude: set[str] | frozenset[str] = frozenset(),
+) -> tuple[ResumeContent, list[str], dict[str, Any], list[str]]:
+    request = resume_request(snap, req, company, raw_jd, density, semantic, exclude)
+    result = ai.run(
+        operation=GenerationOperation.RESUME_GENERATION,
+        role="writing",
+        instructions=operator_notes(request["instructions"], instructions),
+        input_text=request["input_text"],
         schema=AIResumeTailoring,
         application_id=application_id,
         # This schema contains the complete resume plus skill-placement records.
         # A 6k cap occasionally cut valid JSON mid-string. The model is still
         # asked for bounded content, so normal responses keep their prior cost.
         max_output_tokens=12_000,
-        cache_prefix=candidate_prefix,
+        cache_prefix=request["cache_prefix"],
     )
+    return resume_from_result(result, snap, req, raw_jd, previous, section, density, semantic, exclude)
+
+
+def resume_from_result(
+    result: AIResumeTailoring,
+    snap: dict[str, Any],
+    req: JobRequirements,
+    raw_jd: str,
+    previous: ResumeContent | None,
+    section: Section,
+    density: str = "standard",
+    semantic: dict[str, str] | None = None,
+    exclude: set[str] | frozenset[str] = frozenset(),
+) -> tuple[ResumeContent, list[str], dict[str, Any], list[str]]:
+    """Turns the model's resume answer into the resume (the same rules for both request types)."""
     expanded, expansion_notes = expand_snapshot(snap, req, semantic, exclude, result.placements, raw_jd)
     baseline = deterministic_resume(expanded, req, density)
     verified_skills = [s["name"] for s in expanded.get("skills", [])]
@@ -1290,6 +1325,52 @@ def ai_cover_letter(
         max_output_tokens=3000,
         cache_prefix=wrap("candidate_evidence", evidence_listing(snap)),
     )
+    return cover_from_result(result, snap, req, company, job_title)
+
+
+def ai_application_documents(
+    ai: AIService,
+    snap: dict[str, Any],
+    req: JobRequirements,
+    company: str | None,
+    job_title: str | None,
+    raw_jd: str,
+    application_id: str,
+    previous: ResumeContent | None,
+    section: Section,
+    instructions: str = "",
+    density: str = "standard",
+    semantic: dict[str, str] | None = None,
+    exclude: set[str] | frozenset[str] = frozenset(),
+) -> tuple[tuple[ResumeContent, list[str], dict[str, Any], list[str]], CoverLetterContent]:
+    """v2.0: one request writes both documents. The resume part keeps the resume instructions and input as they are,
+    the cover-letter part its own instructions; the job and the candidate evidence are sent once. Each half then goes
+    through the same processing as the separate requests."""
+    request = resume_request(snap, req, company, raw_jd, density, semantic, exclude)
+    combined = (
+        "You write two documents for one candidate and one job in a single response: `resume` and `cover_letter`.\n\n"
+        "# PART 1 — TAILORED RESUME (the `resume` field)\n"
+        + request["instructions"]
+        + "\n\n# PART 2 — COVER LETTER (the `cover_letter` field)\n"
+        + COVER_INSTRUCTIONS
+        + "\nWrite the cover letter for the same candidate and job, consistent with the resume."
+    )
+    result = ai.run(
+        operation=GenerationOperation.APPLICATION_DOCUMENTS,
+        role="writing",
+        instructions=operator_notes(combined, instructions),
+        input_text=request["input_text"],
+        schema=AIApplicationDocuments,
+        application_id=application_id,
+        max_output_tokens=15_000,  # the resume's 12k plus the cover letter's 3k
+        cache_prefix=request["cache_prefix"],
+    )
+    resume = resume_from_result(result.resume, snap, req, raw_jd, previous, section, density, semantic, exclude)
+    return resume, cover_from_result(result.cover_letter, snap, req, company, job_title)
+
+
+def cover_from_result(result: AICoverLetter, snap: dict[str, Any], req: JobRequirements, company: str | None, job_title: str | None) -> CoverLetterContent:
+    """Turns the model's cover-letter answer into the cover letter (the same rules for both request types)."""
     return CoverLetterContent(
         date=date.today().strftime("%B %d, %Y").replace(" 0", " "),
         company=company,
@@ -1320,11 +1401,13 @@ def generate_documents(
     semantic: dict[str, str] | None = None,
     exclude: set[str] | frozenset[str] = frozenset(),
     on_stage_complete: Callable[[str, int, dict[str, Any]], None] | None = None,
+    single_request: bool = True,
 ) -> tuple[ResumeContent | None, CoverLetterContent | None, list[str], str, dict[str, Any], list[str]]:
     """Returns documents, notes, mode, expanded snapshot and expansion notes. Transient AI errors propagate.
 
-    The resume call also returns skill-placement decisions. The independent cover-letter call starts at the same
-    time, so it never waits for resume-specific skill placement.
+    With both documents requested, one request writes both (v2.0, ``single_request``); the resume part also returns
+    the skill-placement decisions. Regenerating one document (or ``single_request=False``) uses that document's own
+    request; the two separate requests then run at the same time.
     """
     notes: list[str] = []
     use_ai = ai is not None and ai.available()
@@ -1368,14 +1451,26 @@ def generate_documents(
         return run
 
     calls: dict[str, Callable[[], Any]] = {}
-    if use_ai and document in ("both", "resume"):
+    if use_ai and single_request and document == "both":
+        # v2.0: one request for both documents. On success both writing stages complete; on a non-transient error both
+        # documents fall back to the profile-based ones below, with no second request.
+        def both_documents() -> Any:
+            value = ai_application_documents(  # type: ignore[arg-type]
+                ai, snap, req, company, job_title, raw_jd, application_id, previous_resume, section, instructions, density, semantic, exclude
+            )
+            complete_stage("resume", "ai")
+            complete_stage("cover_letter", "ai")
+            return value
+
+        calls["both"] = both_documents
+    if use_ai and "both" not in calls and document in ("both", "resume"):
         calls["resume"] = writing_call(
             "resume",
             lambda: ai_resume(  # type: ignore[arg-type]
                 ai, snap, req, company, raw_jd, application_id, previous_resume, section, instructions, density, semantic, exclude
             ),
         )
-    if use_ai and document in ("both", "cover_letter"):
+    if use_ai and "both" not in calls and document in ("both", "cover_letter"):
         calls["cover"] = writing_call(
             "cover_letter",
             lambda: ai_cover_letter(ai, snap, req, company, job_title, raw_jd, application_id, instructions),  # type: ignore[arg-type]
@@ -1387,6 +1482,16 @@ def generate_documents(
             raise error  # the queue retries the whole generation only after focused retries are exhausted
         if error is not None and not isinstance(error, AIError):
             raise error
+
+    if "both" in outcomes:
+        value, error = outcomes["both"]
+        if value is not None:
+            (resume, resume_notes, expanded_snap, expansion_notes), cover = value
+            notes += resume_notes
+        elif error is not None:
+            reason = "unavailable" if isinstance(error, (AIConfigError, BudgetExceeded)) else "failed"
+            notes.append(f"AI writing {reason} ({error}); used deterministic tailoring for the resume and cover letter.")
+            mode = "deterministic"
 
     if document in ("both", "resume"):
         value, error = outcomes.get("resume", (None, None))

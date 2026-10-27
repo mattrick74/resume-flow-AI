@@ -36,7 +36,7 @@ def test_batch_save_reports_each_item(client):
             "items": [
                 _item(0),
                 _item(1),
-                _item(0),  # same URL as the first: already in history, skipped
+                _item(0),  # same URL as the first: saved again (the earlier one is reported, see below)
                 _item(1, job_url="https://other.example.com/x", raw_jd="too short"),
                 _item(0, job_url="not a url"),
             ]
@@ -44,35 +44,30 @@ def test_batch_save_reports_each_item(client):
     )
     assert response.status_code == 201, response.text
     body = response.json()
-    assert [r["status"] for r in body["results"]] == ["created", "created", "skipped", "invalid", "invalid"]
-    assert body["results"][2]["code"] == "url_in_history"
+    assert [r["status"] for r in body["results"]] == ["created", "created", "created", "invalid", "invalid"]
     assert body["results"][3]["code"] == "jd_too_short"
     assert body["results"][4]["code"] == "invalid_url"
     assert body["queued"] == []
 
     saved = client.get("/jobs", params={"status": "DRAFT"}).json()
-    assert len(saved) == 2
+    assert len(saved) == 3
     assert all(job["processing"] is None and job["application"] is None for job in saved)
     # Not analyzed yet, but the list still shows a readable offline guess.
     acme = next(job for job in saved if job["job_url"] == SAMPLE_JOBS[0]["url"])
     assert (acme["title"], acme["company"], acme["location"]) == ("Senior Data Engineer", "Acme Data Co", "Austin, TX")
-    assert client.get("/dashboard/summary").json()["saved_jobs"] == 2
+    assert client.get("/dashboard/summary").json()["saved_jobs"] == 3
 
 
-def test_same_url_is_skipped_but_similar_postings_can_be_saved_on_purpose(client):
-    client.post("/jobs/batch", json={"items": [_item(0)]})
-    again = client.post("/jobs/batch", json={"items": [_item(0)], "confirm_duplicates": True}).json()
-    assert again["results"][0]["status"] == "skipped"  # the same posting URL is never saved twice
-
-    # Same description under a different URL: flagged as a duplicate, and saving it anyway is allowed.
-    other_url = _item(0, job_url="https://jobs.example.org/acme/repost-17")
-    flagged = client.post("/jobs/batch", json={"items": [other_url]}).json()
-    assert flagged["results"][0]["status"] == "duplicate"
-    assert client.post("/jobs/batch", json={"items": [other_url], "confirm_duplicates": True}).json()["results"][0]["status"] == "created"
-
-    # With the setting off, the same URL behaves like any other duplicate.
-    client.patch("/settings", json={"skip_known_urls": False})
-    assert client.post("/jobs/batch", json={"items": [_item(0)], "confirm_duplicates": True}).json()["results"][0]["status"] == "created"
+def test_a_repeated_url_is_saved_and_the_earlier_job_is_reported(client):
+    """1.8.6 saves every posting; v2.0 (BE-06) lists the earlier jobs with the same URL so the extension can say so."""
+    first = client.post("/jobs", json={**_item(0), "analyze": False}).json()
+    assert first["same_url"] == []
+    again = client.post("/jobs", json={**_item(0), "analyze": False}).json()
+    assert again["id"] != first["id"]
+    assert [j["job_id"] for j in again["same_url"]] == [first["id"]]
+    lookup = client.get("/jobs/by-url", params={"url": SAMPLE_JOBS[0]["url"] + "?utm_source=x"}).json()
+    assert {j["job_id"] for j in lookup["same_url"]} == {first["id"], again["id"]}
+    assert client.get("/jobs/by-url", params={"url": "not a url"}).json()["same_url"] == []
 
 
 def test_one_click_processes_every_saved_job(client, ready):
@@ -86,7 +81,7 @@ def test_one_click_processes_every_saved_job(client, ready):
     assert {j["status"] for j in jobs} == {"MATCHED"}
     for job in jobs:
         assert job["processing"]["status"] == "succeeded"
-        assert job["application"]["status"] == "AWAITING_REVIEW"
+        assert job["application"]["status"] == "EXPORTED"  # approved and exported automatically
         detail = client.get(f"/applications/{job['application']['id']}").json()
         assert detail["resume"] is not None and detail["cover_letter"] is not None
         assert detail["selection_method"] == "automatic"
@@ -146,42 +141,29 @@ def test_nothing_to_process(client):
     assert response.json()["error"]["code"] == "nothing_to_process"
 
 
-def test_a_posting_generated_before_is_skipped(client, ready):
+def test_a_posting_generated_before_is_reported_with_its_application(client, ready):
     first = client.post("/jobs/batch", json={"items": [_item(0)], "process": True}).json()["results"][0]["job"]["id"]
     client.app.state.queue.drain()
-    assert client.get(f"/jobs/{first}").json()["applications"]
+    application = client.get(f"/jobs/{first}").json()["applications"][0]
 
-    # An older copy of the same posting (entered while the setting was off) must not be generated again.
-    client.patch("/settings", json={"skip_known_urls": False})
-    copy = client.post("/jobs/batch", json={"items": [_item(0)], "confirm_duplicates": True}).json()["results"][0]["job"]["id"]
-    client.patch("/settings", json={"skip_known_urls": True})
-
-    queued = client.post("/jobs/process", json={"job_ids": [copy]}).json()
-    assert queued["queued"] == [] and queued["skipped"][0]["reason"] == "Already generated for this job URL"
-
-    client.post(f"/jobs/{copy}/match")
-    top = next(m for m in client.get(f"/jobs/{copy}").json()["matches"] if m["rank"] == 1)
-    blocked = client.post("/applications", json={"job_id": copy, "candidate_id": top["candidate_id"]})
-    assert blocked.status_code == 409 and blocked.json()["error"]["code"] == "url_already_generated"
-    assert "already generated" in blocked.json()["error"]["message"]
+    copy = client.post("/jobs", json={**_item(0), "source": "extension", "site": "jobs.example.com"}).json()
+    earlier = next(j for j in copy["same_url"] if j["job_id"] == first)
+    assert earlier["applications"][0]["application_id"] == application["id"]
+    assert earlier["applications"][0]["candidate_name"] == "Avery Quinlan"
 
 
-def test_save_and_generate_uses_the_copy_saved_earlier(client, ready):
+def test_save_and_generate_processes_repeated_postings_independently(client, ready):
     earlier = client.post("/jobs/batch", json={"items": [_item(0)]}).json()["results"][0]["job"]["id"]
     again = client.post("/jobs/batch", json={"items": [_item(0), _item(1)], "process": True}).json()
-    assert [r["status"] for r in again["results"]] == ["skipped", "created"]
-    assert again["results"][0]["queued_job_id"] == earlier and "being generated now" in again["results"][0]["message"]
-    assert earlier in again["queued"] and len(again["queued"]) == 2
+    assert [r["status"] for r in again["results"]] == ["created", "created"]
+    assert earlier not in again["queued"] and len(again["queued"]) == 2
     client.app.state.queue.drain()
-    assert len(client.get("/jobs").json()) == 2 and len(client.get("/applications").json()) == 2
-
-    # Once generated, pasting it again changes nothing.
-    third = client.post("/jobs/batch", json={"items": [_item(0)], "process": True}).json()
-    assert third["results"][0]["status"] == "skipped" and "queued_job_id" not in third["results"][0] and third["queued"] == []
+    assert len(client.get("/jobs").json()) == 3 and len(client.get("/applications").json()) == 2
 
 
-def test_single_job_with_a_known_url_is_skipped(client):
+def test_single_job_with_a_known_url_is_saved_and_reported(client):
     client.post("/jobs/batch", json={"items": [_item(0)]})
-    response = client.post("/jobs", json={"job_url": SAMPLE_JOBS[0]["url"], "raw_jd": SAMPLE_JOBS[0]["text"], "confirm_duplicate": True})
-    assert response.status_code == 409 and response.json()["error"]["code"] == "url_in_history"
-    assert response.json()["error"]["details"]["matches"][0]["reason"] == "same_url"
+    response = client.post("/jobs", json={"job_url": SAMPLE_JOBS[0]["url"], "raw_jd": SAMPLE_JOBS[0]["text"], "analyze": False})
+    assert response.status_code == 201 and len(response.json()["same_url"]) == 1
+
+

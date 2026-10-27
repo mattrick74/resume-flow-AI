@@ -234,7 +234,7 @@ describe("jobs list", () => {
 
     expect(within(row("ML Engineer")).getByText("Queued")).toBeInTheDocument();
     expect(within(row("ML Engineer")).queryByRole("checkbox")).not.toBeInTheDocument();
-    expect(within(row("Platform Engineer")).getByText("Awaiting review")).toBeInTheDocument();
+    expect(within(row("Platform Engineer")).getByText("Preparing files")).toBeInTheDocument();
     expect(within(row("Platform Engineer")).queryByRole("checkbox")).not.toBeInTheDocument();
     expect(within(row("Data Engineer")).getByText("Saved")).toBeInTheDocument();
 

@@ -36,7 +36,7 @@ def test_patch_rejects_secret_fields(client, db):
     response = client.patch("/settings", json={"openai_api_key": FAKE_KEY})
     assert response.status_code == 422
     assert FAKE_KEY not in response.text
-    assert sorted(row.key for row in db.scalars(select(Setting))) == ["export_mode", "gap_confirmation", "hard_requirement_gates", "require_verification"]  # only what the test client set
+    assert sorted(row.key for row in db.scalars(select(Setting))) == ["export_mode", "gap_confirmation", "hard_requirement_gates", "local_analysis_only", "require_verification"]  # only what the test client set
 
 
 def test_patch_rejects_invalid_values(client):

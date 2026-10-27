@@ -51,7 +51,7 @@ def generated_app(client, setup) -> dict:
 
 def test_deterministic_generation_is_truthful(client, setup):
     app = generated_app(client, setup)
-    assert app["status"] == "AWAITING_REVIEW"
+    assert app["status"] == "EXPORTED"  # approved and exported automatically
     assert app["selection_method"] == "automatic"
     resume = app["resume"]
     assert resume["mode"] == "deterministic"
@@ -86,32 +86,24 @@ def test_another_application_for_the_same_candidate_and_consent(client, setup):
     assert response.json()["error"]["code"] == "candidate_not_authorized"
 
 
-def test_review_edit_and_approval(client, setup):
+def test_an_edit_is_saved_as_written_and_exported_again(client, setup):
     app = generated_app(client, setup)
+    assert app["status"] == "EXPORTED"
     content = app["resume"]["content"]
     content["experience"][0]["bullets"][0]["text"] += " for 250 clients"
     edited = client.put(f"/applications/{app['id']}/documents/resume", json={"content": content}).json()
     assert edited["resume"]["version"] == 2
     assert edited["resume"]["issues"] == []  # saved as written: there is no checking step
     assert edited["resume"]["content"]["experience"][0]["bullets"][0]["text"].endswith(" for 250 clients")
-
-    approved = client.post(f"/applications/{app['id']}/approve", json={}).json()
-    assert approved["status"] == "APPROVED"
-    assert approved["resume"]["status"] == "approved"
-
-    # Editing approved content sends it back to review; the approved version is kept.
-    content["experience"][0]["bullets"][0]["text"] = app["resume"]["content"]["experience"][0]["bullets"][0]["text"]
-    again = client.put(f"/applications/{app['id']}/documents/resume", json={"content": content}).json()
-    assert again["status"] == "AWAITING_REVIEW"
-    statuses = {v["version"]: v["status"] for v in again["versions"]["resume"]}
-    assert statuses[2] == "approved" and statuses[3] == "draft"
+    assert edited["status"] == "APPROVED"  # approved automatically and queued for export
+    drain(client)
+    again = client.get(f"/applications/{app['id']}").json()
+    assert again["status"] == "EXPORTED"
+    assert any(Path(f["path"]).name == "Resume_v2.docx" and f["exists"] for f in again["files"])
 
 
 def test_export_writes_exact_layout(client, setup):
-    app = generated_app(client, setup)
-    client.post(f"/applications/{app['id']}/approve", json={})
-    assert client.post(f"/applications/{app['id']}/export").status_code == 202
-    drain(client)
+    app = generated_app(client, setup)  # generation approves and exports automatically
     exported = client.get(f"/applications/{app['id']}").json()
     assert exported["status"] == "EXPORTED"  # never SUBMITTED automatically
     folder = setup["out"] / date.today().isoformat() / "001 Avery Quinlan"
@@ -132,7 +124,7 @@ def test_export_writes_exact_layout(client, setup):
     metadata = json.loads((folder / "001_Acme_Data_Co_Metadata.json").read_text(encoding="utf-8"))
     assert metadata["application_id"] == app["id"]
     assert metadata["source_url"] == SAMPLE_JOBS[0]["url"]
-    assert metadata["review_status"] == "APPROVED"
+    assert metadata["review_status"] == "AUTO_APPROVED"
     assert {f["format"] for f in metadata["files"]} == {"docx", "txt"}
 
     # Export is idempotent: requesting it again doesn't create another job or files.
@@ -251,7 +243,9 @@ def test_pdf_failure_keeps_docx_and_retry_succeeds(client, setup, monkeypatch):
 
 def test_outcomes_are_operator_only_and_ordered(client, setup):
     app = generated_app(client, setup)
-    client.post(f"/applications/{app['id']}/approve", json={})
+    content = app["resume"]["content"]
+    content["summary"] += " Edited."
+    client.put(f"/applications/{app['id']}/documents/resume", json={"content": content})  # back to review
     response = client.post(f"/applications/{app['id']}/outcome", json={"status": "SUBMITTED"})
     assert response.status_code == 409  # must be exported first
 
@@ -263,7 +257,7 @@ def test_section_regeneration_keeps_other_sections(client, setup):
     client.post(f"/applications/{app['id']}/generate", json={"document": "resume", "section": "summary"})
     drain(client)
     after = client.get(f"/applications/{app['id']}").json()
-    assert after["status"] == "AWAITING_REVIEW"
+    assert after["status"] == "EXPORTED"  # the new version is exported automatically too
     assert after["resume"]["version"] == 2
     assert after["resume"]["content"]["experience"] == before["experience"]
     assert after["cover_letter"]["version"] == 1  # untouched
@@ -310,21 +304,18 @@ def test_ai_documents_are_saved_as_written_without_a_checking_step(client, setup
     assert any("quantum" in b["text"] for r in content["experience"] for b in r["bullets"])
 
     # Candidate isolation in prompts: nothing about other candidates is sent.
-    generation_inputs = " ".join(c["input"] for c in fake_ai.calls if c["schema"] in {"AIResumeTailoring", "AICoverLetter"})
+    generation_inputs = " ".join(c["input"] for c in fake_ai.calls if c["schema"] == "AIApplicationDocuments")
     for other in SAMPLE_CANDIDATES[1:]:
         assert other.name not in generation_inputs
         assert other.email not in generation_inputs
 
-    resume_call = next(c for c in fake_ai.calls if c["schema"] == "AIResumeTailoring")
-    cover_call = next(c for c in fake_ai.calls if c["schema"] == "AICoverLetter")
-    assert "<candidate_evidence>" in resume_call["cache_prefix"]
-    assert "<job_description>" not in resume_call["cache_prefix"]
-    assert "<candidate_evidence>" in cover_call["cache_prefix"]
-    assert resume_call["max_output_tokens"] == 12_000
-    assert cover_call["max_output_tokens"] == 3_000
+    (call,) = [c for c in fake_ai.calls if c["schema"] == "AIApplicationDocuments"]  # one request for both documents
+    assert "<candidate_evidence>" in call["cache_prefix"]
+    assert "<job_description>" not in call["cache_prefix"]
+    assert call["max_output_tokens"] == 15_000
 
 
-def test_transient_document_failure_retries_only_failed_call(client, setup, secret_store, fake_ai, db):
+def test_transient_failure_retries_the_one_request(client, setup, secret_store, fake_ai, db):
     secret_store.set("openai_api_key", "sk-test-key-123456")
     calls = {"n": 0}
 
@@ -336,17 +327,19 @@ def test_transient_document_failure_retries_only_failed_call(client, setup, secr
 
     fake_ai.on("AIResumeTailoring", flaky)
     fake_ai.on("AICoverLetter", lambda text: {"greeting": "Dear team,", "paragraphs": [{"text": "Hello Acme Data Co.", "evidence_ids": []}], "closing": "Thanks,"})
-    fake_ai.on("AIClaimReview", lambda text: {"issues": []})
     app = create(client, setup).json()
     drain(client)
-    job = db.scalars(select(ProcessingJob).where(ProcessingJob.application_id == app["id"])).one()
-    assert job.status == ProcessingStatus.SUCCEEDED and job.retry_count == 0
+    job = db.scalars(
+        select(ProcessingJob).where(ProcessingJob.application_id == app["id"], ProcessingJob.job_type == ProcessingJobType.GENERATE_DOCUMENTS)
+    ).one()
+    assert job.status == ProcessingStatus.SUCCEEDED and job.retry_count == 0  # retried in place, not by the queue
     assert calls["n"] == 2
-    assert len([call for call in fake_ai.calls if call["schema"] == "AICoverLetter"]) == 1
-    assert client.get(f"/applications/{app['id']}").json()["status"] == "AWAITING_REVIEW"
+    assert len([call for call in fake_ai.calls if call["schema"] == "AIApplicationDocuments"]) == 2
+    detail = client.get(f"/applications/{app['id']}").json()
+    assert detail["status"] == "EXPORTED" and detail["resume"]["mode"] == "ai"
 
 
-def test_repeated_incomplete_json_falls_back_without_repeating_cover(client, setup, secret_store, fake_ai, db):
+def test_repeated_incomplete_json_falls_back_for_both_documents(client, setup, secret_store, fake_ai, db):
     secret_store.set("openai_api_key", "sk-test-key-123456")
     resume_calls = {"n": 0}
 
@@ -376,9 +369,9 @@ def test_repeated_incomplete_json_falls_back_without_repeating_cover(client, set
 
     assert generation_job.status == ProcessingStatus.SUCCEEDED
     assert generation_job.retry_count == 0
-    assert resume_calls["n"] == 3
-    assert len([call for call in fake_ai.calls if call["schema"] == "AICoverLetter"]) == 1
-    assert detail["resume"]["mode"] == "deterministic"
+    assert resume_calls["n"] == 3  # the first attempt and two focused retries of the one request
+    assert len([call for call in fake_ai.calls if call["schema"] == "AIApplicationDocuments"]) == 3
+    assert detail["resume"]["mode"] == "deterministic" and detail["cover_letter"]["mode"] == "deterministic"
     assert detail["status"] == "EXPORTED"
     assert any("incomplete structured JSON" in issue["message"] for issue in detail["resume"]["issues"])
 
@@ -389,7 +382,7 @@ def test_non_transient_ai_error_falls_back_to_deterministic(client, setup, secre
     app = create(client, setup).json()
     drain(client)
     detail = client.get(f"/applications/{app['id']}").json()
-    assert detail["status"] == "AWAITING_REVIEW"  # deterministic fallback, noted in issues
+    assert detail["status"] == "EXPORTED"  # deterministic fallback, noted in issues
     assert any("AI writing failed" in i["message"] for i in detail["resume"]["issues"])
 
 
@@ -408,7 +401,7 @@ def test_failed_generation_can_be_retried(client, setup, monkeypatch):
     client.post(f"/processing-jobs/{failed['processing'][0]['id']}/retry")
     assert client.get(f"/applications/{app['id']}").json()["status"] == "GENERATING"
     drain(client)
-    assert client.get(f"/applications/{app['id']}").json()["status"] == "AWAITING_REVIEW"
+    assert client.get(f"/applications/{app['id']}").json()["status"] == "EXPORTED"
 
 
 def test_restart_recovery_and_cancel(client, setup, db):
@@ -418,7 +411,7 @@ def test_restart_recovery_and_cancel(client, setup, db):
     db.commit()
     assert client.app.state.queue.recover() == 1
     drain(client)
-    assert client.get(f"/applications/{app['id']}").json()["status"] == "AWAITING_REVIEW"
+    assert client.get(f"/applications/{app['id']}").json()["status"] == "EXPORTED"
 
     second = create(client, setup, "Hana Kobayashi", override_reason="testing cancel").json()
     pending = client.get(f"/applications/{second['id']}").json()["processing"][0]["id"]
@@ -427,7 +420,7 @@ def test_restart_recovery_and_cancel(client, setup, db):
     retried = client.post(f"/processing-jobs/{pending}/retry").json()
     assert retried["status"] == "queued"
     drain(client)
-    assert client.get(f"/applications/{second['id']}").json()["status"] == "AWAITING_REVIEW"
+    assert client.get(f"/applications/{second['id']}").json()["status"] == "EXPORTED"
 
 
 def test_budget_exceeded_falls_back_without_ai(client, setup, secret_store, fake_ai):

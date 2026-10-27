@@ -73,6 +73,9 @@ class AppSettings(BaseModel):
     daily_budget_usd: float | None = Field(default=None, ge=0)
     monthly_budget_usd: float | None = Field(default=None, ge=0)
     ai_extract_on_import: bool = True
+    # v2.0: job analysis and candidate ranking never call the AI (the local extraction and score are used); the only
+    # AI requests per application are the documents and, on demand, answers to form questions.
+    local_analysis_only: bool = True
     semantic_matching: bool = False
     match_weights: MatchWeights = Field(default_factory=MatchWeights)
     resume_template: str = Field(default=DEFAULT_TEMPLATE, max_length=60, description="A built-in template name or custom:<id>")
@@ -122,6 +125,7 @@ class AppSettingsUpdate(BaseModel):
     daily_budget_usd: float | None = None
     monthly_budget_usd: float | None = None
     ai_extract_on_import: bool | None = None
+    local_analysis_only: bool | None = None
     semantic_matching: bool | None = None
     match_weights: MatchWeights | None = None
     resume_template: str | None = None

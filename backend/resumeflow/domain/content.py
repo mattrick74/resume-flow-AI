@@ -120,6 +120,13 @@ class AICoverLetter(BaseModel):
     closing: str
 
 
+class AIApplicationDocuments(BaseModel):
+    """Both documents from one request (v2.0): the tailored resume and the cover letter."""
+
+    resume: AIResumeTailoring
+    cover_letter: AICoverLetter
+
+
 class AIClaimIssue(BaseModel):
     quote: str = Field(description="Exact text from the document")
     reason: str

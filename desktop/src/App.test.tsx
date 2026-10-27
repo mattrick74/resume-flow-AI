@@ -37,7 +37,7 @@ describe("app shell", () => {
     renderApp("/");
     expect(await screen.findByText("Joseph Hein")).toBeInTheDocument();
     expect(screen.getByText("Data Engineer · Acme")).toBeInTheDocument();
-    expect(screen.getAllByText("Awaiting review").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("Preparing files").length).toBeGreaterThan(0);
   });
 
   it("offers a retry when the dashboard cannot load", async () => {
@@ -64,7 +64,7 @@ describe("app shell", () => {
   it("supports Alt+number shortcuts", async () => {
     mockBackend();
     renderApp("/");
-    fireEvent.keyDown(window, { altKey: true, code: "Digit5", key: "5" });
+    fireEvent.keyDown(window, { altKey: true, code: "Digit4", key: "4" }); // Dashboard, New Job, Jobs, Candidates
     expect(await screen.findByRole("heading", { level: 1, name: "Candidates" })).toBeInTheDocument();
   });
 

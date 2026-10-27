@@ -519,7 +519,7 @@ def run_matching(db: Session, ai: AIService | None, job: Job) -> dict[str, Any]:
     warnings: list[str] = []
     # Semantic matching exists to improve ranking between candidates. Avoid the
     # extra AI round trip when there is nobody else to compare with.
-    if len(evaluated) > 1 and settings.semantic_matching and ai is not None and ai.available():
+    if len(evaluated) > 1 and settings.semantic_matching and not settings.local_analysis_only and ai is not None and ai.available():
         shortlist = sorted(
             (e for e in evaluated if e[2].eligibility != EligibilityStatus.INELIGIBLE),
             key=lambda e: e[2].score,

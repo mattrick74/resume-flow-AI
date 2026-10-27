@@ -629,6 +629,13 @@ def _ensure_file(ctx: JobContext, app_id: str, doc_type: DocumentType, fmt: Docu
     return path
 
 
+def _submission_metadata(db: Session, app: Application) -> dict[str, Any]:
+    from resumeflow.services.submission import submission_view
+
+    view = submission_view(db, app)
+    return {"submitted_at": view["submitted_at"], "screenshots": [{k: s.get(k) for k in ("path", "page_url", "page_title", "detected_by", "captured_at")} for s in view["screenshots"]]}
+
+
 def build_metadata(db: Session, app: Application) -> dict[str, Any]:
     job = db.get(Job, app.job_id)
     candidate = db.get(Candidate, app.candidate_id)
@@ -689,6 +696,8 @@ def build_metadata(db: Session, app: Application) -> dict[str, Any]:
             for f in files
         ],
         "pdf_status": app.pdf_status,
+        # v2.0: the confirmation screens captured by the Chrome extension after the user submitted.
+        "submission": _submission_metadata(db, app),
         "profile_revision": app.profile_revision,
         "approved_additions": [
             {
@@ -868,6 +877,10 @@ def handle_export(ctx: JobContext) -> None:
         app = get_application(db, app_id)
         _transition(app, PipelineStatus.EXPORTED, Actor.SYSTEM)
         db.commit()
+        # v2.0: a confirmation screen captured while the files were being written marks it submitted now.
+        from resumeflow.services.submission import apply_pending_submission
+
+        apply_pending_submission(db, app)
     ctx.complete_stage(
         "document_export",
         message="Document export completed",

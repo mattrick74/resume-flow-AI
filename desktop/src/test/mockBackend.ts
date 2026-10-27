@@ -15,6 +15,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
   monthly_budget_usd: null,
   ai_extract_on_import: true,
   semantic_matching: false,
+  local_analysis_only: true,
   match_weights: { mandatory_skills: 35, experience: 25, seniority: 15, preferred_skills: 10, industry: 10, other: 5 },
   resume_template: "professional",
   pdf_converter: "auto",
@@ -129,6 +130,7 @@ export function mockBackend(options: { summary?: DashboardSummary; settings?: Pa
     const { method, path } = call;
     if (path === "/health") return json({ status: "ok", version: "0.1.0", schema_revision: "0001", schema_head: "0001" });
     if (path === "/dashboard/summary") return json(options.summary ?? EMPTY_SUMMARY);
+    if (path === "/answer-bank" && method === "GET") return json({ standard: [{ key: "work_authorization", label: "Authorized to work in the job's country (Yes/No)" }], entries: [] });
     if (path === "/settings" && method === "GET") return json(settingsResponse());
     if (path === "/settings" && method === "PATCH") {
       state.settings = { ...state.settings, ...(call.body as Partial<AppSettings>) };

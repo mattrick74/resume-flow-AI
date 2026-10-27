@@ -1,0 +1,46 @@
+{
+  "manifest_version": 3,
+  "name": "ResumeFlow AI",
+  "version": "2.0.0",
+  "description": "Capture job postings, generate tailored resumes with your local ResumeFlow backend, answer application questions and keep the confirmation screen.",
+  "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEA5GBgqCwZVcNopOtrgvoseUOvppo6sBtfK6t0bGTWIod0hH8/UyfrsYdgpSojbDtncL3G3NSxawI/A/BnVz60Rj2ptHYtao/w4wLWrpTHng1scGVXjxktwG91ovaW0q9Pz1fF2oskEz/x4XtS9Iv5kTN0XPDHLvXjw0QYro0lumBuaUf5UVj8UNfKYtd+uMawG8IYiyzl1artWXK2spSft6X+PxigDFNw3etXSu2dUb94Znbch38MHRGmy2Yz6y2p8IAYqBb0rnEa11ivCs0jHx4danGjh69hpcxVMti1Ix+deK/F37ZGRbsCUPhuko371QS38lKrNZYWfGQRmayPGQIDAQAB",
+  "minimum_chrome_version": "116",
+  "action": {
+    "default_title": "ResumeFlow AI",
+    "default_icon": {
+      "16": "icons/icon16.png",
+      "32": "icons/icon32.png",
+      "48": "icons/icon48.png",
+      "128": "icons/icon128.png"
+    }
+  },
+  "icons": {
+    "16": "icons/icon16.png",
+    "32": "icons/icon32.png",
+    "48": "icons/icon48.png",
+    "128": "icons/icon128.png"
+  },
+  "background": {
+    "service_worker": "src/background.js",
+    "type": "module"
+  },
+  "side_panel": {
+    "default_path": "src/sidepanel/sidepanel.html"
+  },
+  "options_page": "src/options/options.html",
+  "permissions": [
+    "storage",
+    "activeTab",
+    "scripting",
+    "sidePanel",
+    "tabs",
+    "notifications"
+  ],
+  "host_permissions": [
+    "http://127.0.0.1/*",
+    "http://localhost/*"
+  ],
+  "optional_host_permissions": [
+    "<all_urls>"
+  ]
+}
