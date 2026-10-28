@@ -1,11 +1,12 @@
 import { Briefcase, CircleAlert, Clock, FilePlus2, Files, LoaderCircle, MessageCircleQuestion, Search, Sparkles } from "lucide-react";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { Link, useNavigate, useSearchParams } from "react-router";
 import { toast } from "sonner";
 
 import { EmptyState } from "@/components/common/EmptyState";
 import { describeError, ErrorState } from "@/components/common/ErrorState";
 import { PageHeader } from "@/components/common/PageHeader";
+import { PAGE_SIZES, Pagination } from "@/components/common/Pagination";
 import { StatusBadge } from "@/components/common/StatusBadge";
 import { BatchConfirmDialog } from "@/components/experience/BatchConfirmDialog";
 import { Button } from "@/components/ui/button";
@@ -132,9 +133,42 @@ export function JobsPage() {
   const filter: Filter = isFilter(filterParam) ? filterParam : "all";
   const setFilter = (next: Filter) => {
     setSelected(new Set());
-    setParams(next === "all" ? {} : { filter: next }, { replace: true });
+    // Back to page 1, keeping the page size.
+    setParams((current) => ({ ...(next === "all" ? {} : { filter: next }), ...(current.get("size") ? { size: current.get("size")! } : {}) }), { replace: true });
   };
-  const jobs = useJobs({ status: FILTER_STATUS[filter], q: search || undefined });
+  // The page and page size live in the address, so coming back from a job returns to the same page.
+  const size: number = PAGE_SIZES.find((s) => String(s) === params.get("size")) ?? PAGE_SIZES[0];
+  const page = Math.max(1, Number.parseInt(params.get("page") ?? "1", 10) || 1);
+  const setPaging = (nextPage: number, nextSize = size) => {
+    setSelected(new Set());
+    setParams(
+      (current) => {
+        const next = new URLSearchParams(current);
+        if (nextPage > 1) next.set("page", String(nextPage));
+        else next.delete("page");
+        if (nextSize !== PAGE_SIZES[0]) next.set("size", String(nextSize));
+        else next.delete("size");
+        return next;
+      },
+      { replace: true },
+    );
+  };
+  const onSearch = (value: string) => {
+    setSearch(value);
+    if (page > 1) setPaging(1);
+  };
+  const jobs = useJobs({
+    status: FILTER_STATUS[filter],
+    q: search || undefined,
+    needs_answers: filter === "answers",
+    limit: size,
+    offset: (page - 1) * size,
+  });
+  const total = jobs.data?.total ?? 0;
+  // Past the last page (jobs removed, or an old link): go to the last page there is.
+  useEffect(() => {
+    if (jobs.data && !jobs.isPlaceholderData && page > 1 && jobs.data.items.length === 0 && total > 0) setPaging(Math.ceil(total / size));
+  });
   const summary = useDashboardSummary();
   const processJobs = useProcessJobs();
   const waiting = summary.data?.saved_jobs ?? 0;
@@ -151,7 +185,7 @@ export function JobsPage() {
       { replace: true },
     );
 
-  const visible = (jobs.data ?? []).filter((job) => filter !== "answers" || job.needs_confirmation);
+  const visible = jobs.data?.items ?? [];
   const selectable = visible.filter(canProcess);
   const chosen = selectable.filter((job) => selected.has(job.id));
   const allChosen = selectable.length > 0 && chosen.length === selectable.length;
@@ -215,9 +249,9 @@ export function JobsPage() {
         />
         <div className="relative w-64">
           <Search className="pointer-events-none absolute top-1/2 left-2.5 size-4 -translate-y-1/2 text-muted-foreground" aria-hidden />
-          <Input value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Search title, company or URL" className="pl-8" aria-label="Search jobs" />
+          <Input value={search} onChange={(e) => onSearch(e.target.value)} placeholder="Search title, company or URL" className="pl-8" aria-label="Search jobs" />
         </div>
-        {jobsInFlight(jobs.data) && (
+        {jobsInFlight(jobs.data?.items) && (
           <span className="inline-flex items-center gap-1.5 text-xs text-muted-foreground">
             <LoaderCircle className="size-3.5 animate-spin" /> Working in the background — you can keep using the app
           </span>
@@ -314,6 +348,7 @@ export function JobsPage() {
           </Table>
         </Card>
       )}
+      {total > 0 && <Pagination page={page} pageSize={size} total={total} onPage={(next) => setPaging(next)} onPageSize={(next) => setPaging(1, next)} label="jobs" />}
       <BatchConfirmDialog open={answering} onOpenChange={setAnswering} />
     </>
   );

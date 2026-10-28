@@ -25,8 +25,8 @@ import type {
   Health,
   ImportResult,
   JobDetail,
+  JobList,
   JobRequirements,
-  JobSummary,
   PdfConverterStatus,
   ProcessingJobInfo,
   ProcessingStageEventsResponse,
@@ -90,10 +90,10 @@ const patch = <T>(path: string, body: unknown) => apiFetch<T>(path, { method: "P
 const put = <T>(path: string, body: unknown) => apiFetch<T>(path, { method: "PUT", body: json(body) });
 const del = <T>(path: string) => apiFetch<T>(path, { method: "DELETE" });
 
-function query(params: Record<string, string | number | undefined | null>) {
+function query(params: Record<string, string | number | boolean | undefined | null>) {
   const search = new URLSearchParams();
   for (const [key, value] of Object.entries(params)) {
-    if (value !== undefined && value !== null && value !== "") search.set(key, String(value));
+    if (value !== undefined && value !== null && value !== "" && value !== false) search.set(key, String(value));
   }
   const text = search.toString();
   return text ? `?${text}` : "";
@@ -104,6 +104,15 @@ function upload<T>(path: string, file: File) {
   form.append("file", file, file.name);
   return apiFetch<T>(path, { method: "POST", body: form });
 }
+
+/** GET /jobs: filters and the page (offset and page size). */
+export type JobListParams = {
+  status?: string;
+  q?: string;
+  needs_answers?: boolean;
+  limit?: number;
+  offset?: number;
+};
 
 export interface CandidateUpdate {
   full_name?: string;
@@ -177,7 +186,7 @@ export const api = {
       post<FollowUp & { records: ExperienceRecord[]; overview: EvidenceOverview }>(`/candidates/${id}/experience-evidence/approve`, { ids, ...options }),
   },
   jobs: {
-    list: (params: { status?: string; q?: string; limit?: number } = {}) => apiFetch<JobSummary[]>(`/jobs${query(params)}`),
+    list: (params: JobListParams = {}) => apiFetch<JobList>(`/jobs${query(params)}`),
     get: (id: string) => apiFetch<JobDetail>(`/jobs/${id}`),
     create: (body: JobCreate) => post<JobDetail>("/jobs", body),
     saveMany: (items: JobCreate[], options: { process?: boolean; confirm_duplicates?: boolean } = {}) =>

@@ -109,14 +109,22 @@ def _analyze_and_match(db, ai, job: Job) -> None:
 
 
 @router.get("")
-def list_jobs(db: DbSession, status: str | None = None, q: str | None = None, limit: int = 100) -> list[dict[str, Any]]:
+def list_jobs(
+    db: DbSession, status: str | None = None, q: str | None = None, needs_answers: bool = False, limit: int = 100, offset: int = 0
+) -> dict[str, Any]:
+    """One page of jobs, newest first: ``items`` plus ``total`` (all jobs matching the filters), ``offset`` and ``limit``.
+    ``needs_answers``: only jobs waiting for answers about missing job skills."""
     stmt = select(Job)
     if status in {s.value for s in PipelineStatus}:
         stmt = stmt.where(Job.status == PipelineStatus(status))
     if q:
         like = f"%{q.strip()}%"
         stmt = stmt.where(Job.title.ilike(like) | Job.company.ilike(like) | Job.job_url.ilike(like))
-    jobs = list(db.scalars(stmt.order_by(Job.created_at.desc()).limit(min(max(limit, 1), 500))))
+    if needs_answers:
+        stmt = stmt.where(Job.confirmation_requested_at.is_not(None), Job.confirmation_resolved_at.is_(None))
+    total = db.scalar(select(func.count()).select_from(stmt.subquery())) or 0
+    limit, offset = min(max(limit, 1), 500), max(offset, 0)
+    jobs = list(db.scalars(stmt.order_by(Job.created_at.desc(), Job.id).offset(offset).limit(limit)))
     ids = [j.id for j in jobs]
     top = {
         job_id: name
@@ -138,7 +146,7 @@ def list_jobs(db: DbSession, status: str | None = None, q: str | None = None, li
     )
     processing = _latest_processing(db, ids)
     latest_app = {a.job_id: a for a in db.scalars(select(Application).where(Application.job_id.in_(ids)).order_by(Application.created_at))}
-    return [
+    items = [
         {
             **service.job_summary(j),
             "top_candidate": top.get(j.id),
@@ -153,6 +161,7 @@ def list_jobs(db: DbSession, status: str | None = None, q: str | None = None, li
         }
         for j in jobs
     ]
+    return {"items": items, "total": total, "offset": offset, "limit": limit}
 
 
 def _latest_processing(db, ids: list[str]) -> dict[str, dict[str, Any]]:

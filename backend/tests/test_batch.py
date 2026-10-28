@@ -49,7 +49,7 @@ def test_batch_save_reports_each_item(client):
     assert body["results"][4]["code"] == "invalid_url"
     assert body["queued"] == []
 
-    saved = client.get("/jobs", params={"status": "DRAFT"}).json()
+    saved = client.get("/jobs", params={"status": "DRAFT"}).json()["items"]
     assert len(saved) == 3
     assert all(job["processing"] is None and job["application"] is None for job in saved)
     # Not analyzed yet, but the list still shows a readable offline guess.
@@ -77,7 +77,7 @@ def test_one_click_processes_every_saved_job(client, ready):
     assert len(queued.json()["queued"]) == 2
 
     client.app.state.queue.drain()  # analysis, matching, then the generation each one queued
-    jobs = client.get("/jobs").json()
+    jobs = client.get("/jobs").json()["items"]
     assert {j["status"] for j in jobs} == {"MATCHED"}
     for job in jobs:
         assert job["processing"]["status"] == "succeeded"
@@ -94,7 +94,7 @@ def test_job_nobody_qualifies_for_gets_no_application(client, ready):
     saved = client.post("/jobs/batch", json={"items": [{"job_url": "https://civil.example.com/bridge", "raw_jd": NO_ONE_QUALIFIES}], "process": True}).json()
     assert len(saved["queued"]) == 1
     client.app.state.queue.drain()
-    job = client.get("/jobs").json()[0]
+    job = client.get("/jobs").json()["items"][0]
     assert job["status"] == "NO_ELIGIBLE_CANDIDATE"
     assert job["application"] is None
     assert job["processing"]["status"] == "succeeded"
@@ -158,7 +158,7 @@ def test_save_and_generate_processes_repeated_postings_independently(client, rea
     assert [r["status"] for r in again["results"]] == ["created", "created"]
     assert earlier not in again["queued"] and len(again["queued"]) == 2
     client.app.state.queue.drain()
-    assert len(client.get("/jobs").json()) == 3 and len(client.get("/applications").json()) == 2
+    assert client.get("/jobs").json()["total"] == 3 and len(client.get("/applications").json()) == 2
 
 
 def test_single_job_with_a_known_url_is_saved_and_reported(client):
@@ -167,3 +167,28 @@ def test_single_job_with_a_known_url_is_saved_and_reported(client):
     assert response.status_code == 201 and len(response.json()["same_url"]) == 1
 
 
+
+
+def test_the_job_list_comes_in_pages(client, db):
+    items = [_item(i % 2, job_url=f"https://careers.example.com/jobs/{i}") for i in range(12)]
+    client.post("/jobs/batch", json={"items": items, "confirm_duplicates": True})
+    pages = [client.get("/jobs", params={"limit": 5, "offset": offset}).json() for offset in (0, 5, 10)]
+    assert [p["total"] for p in pages] == [12, 12, 12]
+    assert [len(p["items"]) for p in pages] == [5, 5, 2]
+    ids = [j["id"] for p in pages for j in p["items"]]
+    assert len(set(ids)) == 12  # every job once: none twice, none left out
+    created = [j["created_at"] for p in pages for j in p["items"]]
+    assert created == sorted(created, reverse=True)  # newest first
+    assert client.get("/jobs", params={"limit": 5, "offset": 20}).json() == {"items": [], "total": 12, "offset": 20, "limit": 5}
+
+    # Filters count before paging: "Needs answers" (jobs waiting for missing-skill answers) and search.
+    from datetime import UTC, datetime
+
+    from resumeflow.db.models import Job
+
+    waiting = db.get(Job, ids[7])
+    waiting.confirmation_requested_at = datetime.now(UTC)
+    db.commit()
+    answers = client.get("/jobs", params={"needs_answers": True, "limit": 5}).json()
+    assert answers["total"] == 1 and [j["id"] for j in answers["items"]] == [ids[7]]
+    assert client.get("/jobs", params={"q": "careers.example.com/jobs/1", "limit": 5}).json()["total"] == 3  # 1, 10, 11

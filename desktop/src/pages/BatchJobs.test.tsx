@@ -208,7 +208,7 @@ describe("jobs list", () => {
     mockBackend({
       summary: { ...EMPTY_SUMMARY, saved_jobs: 2 },
       override: (call) => {
-        if (call.method === "GET" && call.path.split("?")[0] === "/jobs") return json(jobs);
+        if (call.method === "GET" && call.path.split("?")[0] === "/jobs") return json({ items: jobs, total: jobs.length, offset: 0, limit: 25 });
         if (call.method === "POST" && call.path === "/jobs/process") {
           const body = call.body as { job_ids?: string[]; all_saved?: boolean };
           return json({ queued: body.all_saved ? ["j1", "j2"] : body.job_ids, skipped: [] }, 202);

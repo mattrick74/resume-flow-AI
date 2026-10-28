@@ -171,7 +171,7 @@ describe("one confirmation session for every waiting job", () => {
     const { calls } = mockBackend({
       summary: { ...EMPTY_SUMMARY, jobs_needing_confirmation: 2 },
       override: (call) => {
-        if (call.method === "GET" && call.path.split("?")[0] === "/jobs") return json([waiting("j1"), waiting("j2")]);
+        if (call.method === "GET" && call.path.split("?")[0] === "/jobs") return json({ items: [waiting("j1"), waiting("j2")], total: 2, offset: 0, limit: 25 });
         if (call.path === "/jobs/skill-gaps/batch") return json(gaps);
         if (call.path === "/candidates/c1/skills/confirm-bulk") return json({ answers: [{ skill: "Kubernetes", normalized: "kubernetes", decision: "used", issues: [] }], suggestions: [], resumed: ["j1", "j2"], rematched: [], candidate: candidateDetail() });
         return undefined;

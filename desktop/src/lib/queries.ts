@@ -1,6 +1,6 @@
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { keepPreviousData, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
-import { api } from "@/lib/api";
+import { api, type JobListParams } from "@/lib/api";
 import { DEFAULT_TEMPLATE_STYLE } from "@/lib/templateStyle";
 import type { AppSettings, ApplicationDetail, CandidateDetail, JobDetail, JobSummary, PipelineStatus, TemplateStyle } from "@/lib/types";
 
@@ -124,11 +124,13 @@ export function jobsInFlight(jobs: JobSummary[] | undefined) {
   );
 }
 
-export function useJobs(params: { status?: string; q?: string } = {}) {
+/** One page of the job list; the previous page stays on screen while the next one loads. */
+export function useJobs(params: JobListParams = {}) {
   return useQuery({
     queryKey: [...queryKeys.jobs, params],
     queryFn: () => api.jobs.list(params),
-    refetchInterval: (query) => (jobsInFlight(query.state.data) ? 2_000 : false),
+    placeholderData: keepPreviousData,
+    refetchInterval: (query) => (jobsInFlight(query.state.data?.items) ? 2_000 : false),
   });
 }
 

@@ -426,6 +426,14 @@ export interface JobProcessing {
   error: string | null;
 }
 
+/** GET /jobs: one page of jobs (newest first) and how many match the filters in all. */
+export interface JobList {
+  items: JobSummary[];
+  total: number;
+  offset: number;
+  limit: number;
+}
+
 export interface JobSummary {
   id: string;
   job_url: string;
