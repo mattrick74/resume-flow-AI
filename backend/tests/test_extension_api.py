@@ -248,6 +248,58 @@ def test_candidate_notes_let_the_ai_answer_what_the_resume_cannot(client, setup,
     assert "snack" in asked and "relocate" not in asked and "Desired salary" not in asked
 
 
+def test_open_questions_about_motivation_are_always_written(client, setup, secret_store, fake_ai):
+    app = create(client, setup).json()
+    drain(client)
+    secret_store.set("openai_api_key", "sk-test-key-123456")
+    fields = [
+        {"field_id": "f1", "label": "Why do you want to join our company?", "type": "textarea", "max_length": 120},
+        {"field_id": "f2", "label": "Why join us?", "type": "text"},  # a short label in a one-line box: still an open question
+        {"field_id": "f3", "label": "2. Why are you going to change your job?", "type": "text"},
+    ]
+    seen = {}
+
+    def answer(text: str) -> dict:
+        questions = [json.loads(line) for line in text.split("<questions>")[1].split("</questions>")[0].strip().splitlines()]
+        seen["questions"] = questions
+        return {
+            "answers": [
+                {
+                    "field_id": "q1",
+                    "answer": "Acme's data platform is the work I do best. I have built reliable pipelines on AWS for years. "
+                    "I want to bring that to a team operating at your scale and keep growing with it.",
+                },
+                {"field_id": " q2 ", "answer": "The role matches my data engineering work."},
+                {"field_id": "q3", "answer": "I'm looking for a role with more ownership of the data platform, which this one offers."},
+            ]
+        }
+
+    fake_ai.on("AIFormAnswers", answer)
+    answers = {a["field_id"]: a for a in client.post(f"/applications/{app['id']}/answers", json={"fields": fields}).json()["answers"]}
+    call = [c for c in fake_ai.calls if c["schema"] == "AIFormAnswers"][-1]
+    assert [q["field_id"] for q in seen["questions"]] == ["q1", "q2", "q3"]  # short ids the model can't get wrong
+    assert not any(q.get("short") for q in seen["questions"])  # all three asked as open questions, for sentences
+    assert "ALWAYS answer these" in call["instructions"] and "why-leaving" in call["instructions"]
+    assert call["model"] == client.get("/settings").json()["settings"]["writing_model"]  # written like the cover letter
+    assert {a["source"] for a in answers.values()} == {"ai"}
+    # Over the field's 120 characters: cut at the end of a sentence, not mid-word.
+    assert answers["f1"]["value"] == "Acme's data platform is the work I do best. I have built reliable pipelines on AWS for years."
+    assert answers["f3"]["value"].startswith("I'm looking for a role with more ownership")
+
+
+def test_answers_by_position_when_the_model_drops_the_ids(client, setup, secret_store, fake_ai):
+    app = create(client, setup).json()
+    drain(client)
+    secret_store.set("openai_api_key", "sk-test-key-123456")
+    fields = [
+        {"field_id": "a", "label": "Why do you want this role?", "type": "textarea"},
+        {"field_id": "b", "label": "Describe a project you are proud of.", "type": "textarea"},
+    ]
+    fake_ai.on("AIFormAnswers", lambda text: {"answers": [{"field_id": "", "answer": "First answer."}, {"field_id": "", "answer": "Second answer."}]})
+    answers = {a["field_id"]: a["value"] for a in client.post(f"/applications/{app['id']}/answers", json={"fields": fields}).json()["answers"]}
+    assert answers == {"a": "First answer.", "b": "Second answer."}
+
+
 def test_answers_follow_the_tailored_resume(client, setup, secret_store, fake_ai):
     app = create(client, setup).json()
     drain(client)

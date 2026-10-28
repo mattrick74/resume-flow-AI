@@ -27,6 +27,20 @@ export interface Health {
   schema_head: string | null;
 }
 
+/** v2.0: GET/POST /license. */
+export interface LicenseStatus {
+  required: boolean;
+  valid: boolean;
+  code: string;
+  message: string | null;
+  name: string | null;
+  key_id: string | null;
+  expires_at: string | null;
+  days_left: number | null;
+  bound_to_this_pc: boolean;
+  machine_code: string;
+}
+
 export interface MatchWeights {
   mandatory_skills: number;
   experience: number;

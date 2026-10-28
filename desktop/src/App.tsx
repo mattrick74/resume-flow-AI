@@ -5,6 +5,7 @@ import { HashRouter, Navigate, Route, Routes } from "react-router";
 import { ThemeProvider, ThemeSync } from "@/app/theme";
 import { AppShell } from "@/components/layout/AppShell";
 import { BackendGate } from "@/components/layout/BackendGate";
+import { LicenseGate } from "@/components/layout/LicenseGate";
 import { ProcessingNotifications } from "@/components/layout/ProcessingNotifications";
 import { Toaster } from "@/components/ui/sonner";
 import { TooltipProvider } from "@/components/ui/tooltip";
@@ -69,12 +70,14 @@ export function App() {
   return (
     <AppProviders queryClient={queryClient}>
       <BackendGate>
-        <ThemeSync />
-        {/* Hash routing: the packaged app is served from a custom protocol with no server-side routes. */}
-        <HashRouter>
-          <ProcessingNotifications />
-          <AppRoutes />
-        </HashRouter>
+        <LicenseGate>
+          <ThemeSync />
+          {/* Hash routing: the packaged app is served from a custom protocol with no server-side routes. */}
+          <HashRouter>
+            <ProcessingNotifications />
+            <AppRoutes />
+          </HashRouter>
+        </LicenseGate>
       </BackendGate>
     </AppProviders>
   );

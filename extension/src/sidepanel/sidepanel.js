@@ -82,6 +82,7 @@ async function busy(button, task) {
     return await task();
   } catch (error) {
     message(error.message);
+    if (String(error.code || "").startsWith("license_")) refreshStatus(); // expired while the panel was open
     return null;
   } finally {
     button.disabled = false;
@@ -101,12 +102,22 @@ async function allowSites() {
 
 async function refreshStatus() {
   const pill = $("status");
+  show("enter-license", false);
   try {
     const status = await send("status");
     state.connected = status.running && status.paired;
     pill.textContent = state.connected ? `Connected · v${status.version}` : status.running ? "Not paired" : "Backend off";
     pill.className = `pill ${state.connected ? "ok" : "bad"}`;
     $("connection-message").textContent = status.message || "";
+    // v2.0: the backend works only with a valid license key; the workspace has the screen to enter one.
+    const license = state.connected ? await api("GET", "/license").catch(() => null) : null;
+    if (license && !license.valid) {
+      state.connected = false;
+      pill.textContent = license.code === "license_expired" ? "License expired" : "License needed";
+      pill.className = "pill bad";
+      $("connection-message").textContent = `${license.message} This PC's machine code: ${license.machine_code}`;
+      show("enter-license");
+    }
     show("connection", !state.connected);
   } catch (error) {
     state.connected = false;
@@ -677,6 +688,7 @@ async function captureNow() {
 
 $("open-options").addEventListener("click", () => chrome.runtime.openOptionsPage());
 $("retry-status").addEventListener("click", () => refreshStatus().then(() => loadTab(true)));
+$("enter-license").addEventListener("click", () => openWorkspace("/"));
 $("open-workspace").addEventListener("click", () => openWorkspace(state.application ? `/applications/${state.application.id}` : "/"));
 $("capture").addEventListener("click", (e) => busy(e.currentTarget, capture));
 $("save-job").addEventListener("click", (e) => busy(e.currentTarget, saveJob));

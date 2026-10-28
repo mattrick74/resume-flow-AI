@@ -17,8 +17,9 @@ DOCX = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
 
 @pytest.fixture
 def config(tmp_path) -> AppConfig:
-    # Background workers off: tests drive the queue explicitly with queue.drain().
-    return AppConfig(data_dir=tmp_path / "data", session_token=TEST_TOKEN, workers_enabled=False, auto_backup=False)
+    # Background workers off: tests drive the queue explicitly with queue.drain(). License keys are tested in
+    # test_licensing.py; everywhere else the API is open.
+    return AppConfig(data_dir=tmp_path / "data", session_token=TEST_TOKEN, workers_enabled=False, auto_backup=False, license_required=False)
 
 
 @pytest.fixture

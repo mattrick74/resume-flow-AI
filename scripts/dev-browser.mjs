@@ -19,6 +19,8 @@ const env = {
   RESUMEFLOW_SESSION_TOKEN: randomBytes(32).toString("base64url"),
   RESUMEFLOW_BACKEND_URL: `http://127.0.0.1:${port}`,
   RESUMEFLOW_DATA_DIR: process.env.RESUMEFLOW_DATA_DIR ?? path.join(root, ".dev-data"),
+  // Development from source: no license key needed (set RESUMEFLOW_LICENSE_REQUIRED=1 to try the license screen).
+  RESUMEFLOW_LICENSE_REQUIRED: process.env.RESUMEFLOW_LICENSE_REQUIRED ?? "0",
 };
 
 const backend = spawn(python, ["-m", "resumeflow", "--port", port, "--parent-pid", String(process.pid)], {

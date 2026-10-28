@@ -81,6 +81,10 @@ impl Sidecar {
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::null());
+        // Debug builds run the backend from source with its own data: no license key needed there. (The built
+        // backend always requires one, whatever this says.)
+        #[cfg(debug_assertions)]
+        command.env("RESUMEFLOW_LICENSE_REQUIRED", "0");
 
         #[cfg(windows)]
         {
