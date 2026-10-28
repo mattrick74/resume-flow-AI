@@ -26,19 +26,6 @@ function run(command, args) {
   }
 }
 
-// v2.0: the built backend accepts only license keys signed by the keygen, so building needs the keygen set up (its public
-// key in backend/resumeflow/license_key.py). The smoke test activates a 1-day key made with it.
-function smokeLicenseKey() {
-  const keygen = path.join(root, "scripts", "license", "keygen.py");
-  const result = spawnSync(python, [keygen, "issue", "--name", "release smoke test", "--days", "1", "--quiet", "--no-log"], { cwd: root, encoding: "utf-8" });
-  if (result.status !== 0) {
-    console.error(`[sidecar] couldn't make a license key for the smoke test: ${(result.stderr || result.stdout || "").trim()}`);
-    console.error("[sidecar] set up license keys once: backend\\.venv\\Scripts\\python scripts\\license\\keygen.py init");
-    process.exit(1);
-  }
-  return result.stdout.trim();
-}
-
 function freePort() {
   return new Promise((resolve, reject) => {
     const server = net.createServer().listen(0, "127.0.0.1", () => {
@@ -51,7 +38,7 @@ function freePort() {
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
-async function smokeTest(licenseKey) {
+async function smokeTest() {
   const port = await freePort();
   const token = randomBytes(32).toString("base64url");
   const work = mkdtempSync(path.join(os.tmpdir(), "resumeflow-smoke-"));
@@ -109,13 +96,6 @@ async function smokeTest(licenseKey) {
       if (Date.now() > deadline) throw new Error("frozen backend did not become healthy within 30 s");
       await sleep(400);
     }
-
-    // The build refuses to work without a license, and unlocks with a key from the keygen.
-    const locked = await fetch(`${base}/settings`, { headers: auth });
-    const lockedCode = (await locked.json().catch(() => null))?.error?.code;
-    if (locked.status !== 403 || lockedCode !== "license_required") throw new Error(`the build works without a license (${locked.status} ${lockedCode})`);
-    const license = await call("POST", "/license", { key: licenseKey });
-    if (!license.valid) throw new Error(`the smoke-test license wasn't accepted: ${license.message}`);
 
     await call("PATCH", "/settings", { output_root: path.join(work, "out"), pdf_converter: "none" });
     const resumes = path.join(work, "samples", "resumes");
@@ -206,14 +186,13 @@ async function smokeTest(licenseKey) {
   }
 }
 
-const licenseKey = smokeLicenseKey(); // before freezing: a build nobody can unlock is useless
 if (!process.argv.includes("--smoke-only")) run(python, ["-m", "PyInstaller", "--noconfirm", "--clean", "--log-level", "WARN", path.join("packaging", "resumeflow-backend.spec")]);
 if (!existsSync(exe)) {
   console.error(`[sidecar] expected ${exe} after PyInstaller`);
   process.exit(1);
 }
 try {
-  await smokeTest(licenseKey);
+  await smokeTest();
 } catch (error) {
   console.error(`[sidecar] smoke test failed: ${error instanceof Error ? error.message : error}`);
   process.exit(1);

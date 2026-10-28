@@ -268,18 +268,6 @@ candidate's work: every new fact comes from the operator (`services/experience.p
   code (hash only, 5 minutes, 5 attempts) that `POST /pair` (unauthenticated) exchanges for the token; `show-token` prints it.
   CORS also allows `chrome-extension://<config.extension_ids>` (the extension's ID is fixed by the `key` in its manifest).
   Launchers: `scripts/backend/start-backend.ps1`, `install-startup.ps1` (Startup shortcut), `pair.cmd`.
-- **License keys (`licensing.py`, `api/license.py`, `scripts/license/keygen.py`):** every protected route also depends on
-  `require_license` (403 `license_required|license_expired|license_other_machine|license_clock|license_invalid|
-  license_not_configured`, with `details.machine_code`); `GET/POST /license` need only the token. A key is
-  `RF1-<base64url JSON>.<base64url Ed25519 signature>` with id, name, issued, expires and an optional machine code
-  (SHA-256 of the Windows MachineGuid, `XXXX-XXXX-XXXX-XXXX`). The backend verifies with `license_key.PUBLIC_KEY`; the
-  private key exists only with the keygen (`%USERPROFILE%\.resumeflow-keygen\signing_key.pem`, `issued.csv`). The active
-  key is `<data dir>/license.key`; `license_state.json` keeps the latest time seen, and a clock more than 12 h earlier is
-  refused. `config.license_required` can be turned off only in source runs (debug Tauri, dev-browser); frozen builds
-  force it on. The desktop and the extension's workspace wrap the app in `LicenseGate` (machine code, key entry, a
-  banner when ≤ 2 days are left; a 403 `license_*` anywhere re-checks); the side panel shows *License needed/expired*.
-  `build-sidecar.mjs` refuses to build without the keygen and checks the frozen exe is locked until a 1-day key is
-  activated.
 - **Two front ends, one backend (BE-12):** the desktop shell (`desktop/src-tauri/src/sidecar.rs`) no longer starts a
   private backend. It checks `GET /health` on 127.0.0.1:8765, reads the saved token from `<data dir>/api_token`
   (`%LOCALAPPDATA%\ResumeFlowAI`, or `RESUMEFLOW_DATA_DIR`), and only when nothing answers starts the bundled backend

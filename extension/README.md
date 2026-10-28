@@ -21,10 +21,7 @@ round. Use either on its own or both together. All candidates, jobs, documents a
    `manifest.json`); the backend allows exactly that origin.
 4. **Pair**: run `scripts\backend\pair.cmd` and enter the 6-digit code in the extension's Options page
    (right-click the toolbar icon → Options). The backend keeps one saved token, so this is needed only once.
-5. **License key**: the backend works only with a valid license key. If the side panel says *License needed* or
-   *License expired*, click **Enter license key**, send the machine code shown there to whoever gives you keys, and paste
-   the key you receive.
-6. **Allow on job sites** (Options, or the first time you click Capture): lets ResumeFlow read the page you're on,
+5. **Allow on job sites** (Options, or the first time you click Capture): lets ResumeFlow read the page you're on,
    fill forms and capture the confirmation screen. It only acts when you click it.
 
 ## Everyday use

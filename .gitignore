@@ -21,7 +21,3 @@ desktop/src-tauri/gen/
 
 # Chrome extension: the workspace page built from desktop/ (npm run build:extension)
 extension/workspace/
-
-# License signing keys never belong in the repository (the keygen keeps them in %USERPROFILE%\.resumeflow-keygen)
-*.pem
-signing_key*

@@ -129,8 +129,6 @@ export function mockBackend(options: { summary?: DashboardSummary; settings?: Pa
 
     const { method, path } = call;
     if (path === "/health") return json({ status: "ok", version: "0.1.0", schema_revision: "0001", schema_head: "0001" });
-    if (path === "/license" && method === "GET")
-      return json({ required: false, valid: true, code: "ok", message: null, name: null, key_id: null, expires_at: null, days_left: null, bound_to_this_pc: false, machine_code: "4F2A-9C1E-77B0-D3E8" });
     if (path === "/dashboard/summary") return json(options.summary ?? EMPTY_SUMMARY);
     if (path === "/answer-bank" && method === "GET") return json({ standard: [{ key: "work_authorization", label: "Authorized to work in the job's country (Yes/No)" }], entries: [] });
     if (path === "/settings" && method === "GET") return json(settingsResponse());

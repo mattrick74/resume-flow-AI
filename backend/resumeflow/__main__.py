@@ -18,8 +18,6 @@ import uvicorn
 
 from resumeflow.app import create_app
 from resumeflow.config import AppConfig
-from resumeflow.errors import AppError
-from resumeflow.licensing import LicenseManager
 from resumeflow.logging_setup import configure_logging
 from resumeflow.pairing import CODE_MINUTES, load_or_create_token, new_pairing_code
 
@@ -78,11 +76,9 @@ def main(argv: list[str] | None = None) -> None:
         "command",
         nargs="?",
         default="serve",
-        choices=["serve", "pair", "show-token", "license"],
-        help="serve (default); pair: show a 6-digit code for the Chrome extension; show-token: print the API token; "
-        "license [KEY]: show this PC's machine code and the license, or activate KEY",
+        choices=["serve", "pair", "show-token"],
+        help="serve (default); pair: show a 6-digit code for the Chrome extension; show-token: print the API token",
     )
-    parser.add_argument("key", nargs="?", help="license: the license key to activate")
     parser.add_argument("--host")
     parser.add_argument("--port", type=int)
     parser.add_argument("--parent-pid", type=int, help="Exit when this process exits (desktop shell)")
@@ -103,21 +99,6 @@ def main(argv: list[str] | None = None) -> None:
         return
     if args.command == "show-token":
         print(config.session_token)
-        return
-    if args.command == "license":
-        manager = LicenseManager(config.data_dir, required=True)
-        if args.key:
-            try:
-                manager.activate(args.key)
-            except AppError as exc:
-                print(f"\n  {exc.message}\n")
-                raise SystemExit(1) from exc
-        status = manager.status()
-        print(f"\n  Machine code:  {status['machine_code']}")
-        if status["valid"]:
-            print(f"  License:       valid for {status['name'] or 'unnamed'} until {status['expires_at']} ({status['days_left']} days left)\n")
-        else:
-            print(f"  License:       {status['message']}\n")
         return
 
     configure_logging(config)

@@ -100,36 +100,13 @@ Regenerate them with `backend\.venv\Scripts\python -m resumeflow.devtools.make_s
 
 Keyboard: Ctrl+K command palette · Alt+1…8 switch screens · Ctrl+B sidebar · Ctrl+S save · Ctrl+Enter analyze.
 
-## License keys
-
-The built backend works only with a license key, so a copy you give someone stops working when their key runs out.
-Keys are signed with your private signing key; the backend holds only the public half, so it can check keys but can't
-make them. Both front ends show a license screen with the PC's **machine code** when no valid key is entered.
-
-```powershell
-# once: create the signing key (in %USERPROFILE%\.resumeflow-keygen; back it up) and put its public key in the backend,
-# then rebuild (npm run release)
-backend\.venv\Scripts\python scripts\license\keygen.py init
-
-# a key valid for 7 days from now, for one PC (the machine code the user sees on the license screen)
-backend\.venv\Scripts\python scripts\license\keygen.py issue --name "Alex Doe" --machine 4F2A-9C1E-77B0-D3E8
-
-# without --machine the key works on any PC; --days changes the length (e.g. --days 3650 for your own PC)
-```
-
-The user pastes the key into the license screen (or runs `resumeflow-backend.exe license <KEY>`). After the 7 days the
-API locks again until a new key is entered; a banner warns two days ahead. Setting the PC's clock back doesn't help, and
-an edited key or one signed with another signing key is refused. Every key issued is listed in `issued.csv` next to the
-signing key. Development runs from source (`npm run tauri dev`, `scripts/dev-browser.mjs`) skip the check; the built
-executable always checks. The release build needs the keygen set up: its smoke test activates a 1-day key.
-
 ## Install (production)
 
 Run `ResumeFlow AI_1.8.5_x64-setup.exe` (per-user install, no admin rights needed). App data, backups and
 logs live in `%LOCALAPPDATA%\ResumeFlowAI`. The installer isn't code-signed yet, so on first run Windows
 SmartScreen shows *More info → Run anyway*. PDFs are made with LibreOffice if installed, otherwise
 Microsoft Word.
-npm run release
+
 ## Develop
 
 One-time setup:

@@ -8,7 +8,6 @@ from __future__ import annotations
 
 import os
 import secrets
-import sys
 from pathlib import Path
 from typing import Literal
 
@@ -80,14 +79,6 @@ class AppConfig(BaseSettings):
     # "memory" keeps API keys in this process only. The release smoke test uses it so it can never read
     # (or spend with) the operator's key from Windows Credential Manager.
     secret_backend: Literal["keyring", "memory"] = "keyring"
-    # v2.0: the API needs a valid license key (resumeflow.licensing). Development runs from source may turn it off;
-    # the built executable always requires it.
-    license_required: bool = True
-
-    @field_validator("license_required")
-    @classmethod
-    def _license_in_builds(cls, value: bool) -> bool:
-        return True if getattr(sys, "frozen", False) else value
 
     @field_validator("host")
     @classmethod

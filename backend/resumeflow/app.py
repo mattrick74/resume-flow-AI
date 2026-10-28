@@ -9,13 +9,12 @@ from fastapi.middleware.cors import CORSMiddleware
 from starlette.middleware.trustedhost import TrustedHostMiddleware
 
 from resumeflow import __version__
-from resumeflow.api import answers, applications, candidates, dashboard, health, jobs, license, operations, pair, processing, settings, system, templates
-from resumeflow.auth import require_license, require_session_token
+from resumeflow.api import answers, applications, candidates, dashboard, health, jobs, operations, pair, processing, settings, system, templates
+from resumeflow.auth import require_session_token
 from resumeflow.config import AppConfig
 from resumeflow.db.migrate import current_revision, upgrade_to_head
 from resumeflow.db.session import create_db_engine, create_session_factory
 from resumeflow.errors import install_error_handlers
-from resumeflow.licensing import LicenseManager
 from resumeflow.services.ai.service import AIService, ProviderFactory
 from resumeflow.services.applications import register_handlers, resume_automatic_exports
 from resumeflow.services.backups import auto_backup_if_due
@@ -85,7 +84,6 @@ def create_app(
         openapi_url=None,
     )
     app.state.config = config
-    app.state.license = LicenseManager(config.data_dir, required=config.license_required)
     app.state.secret_store = secret_store or (MemorySecretStore() if config.secret_backend == "memory" else KeyringSecretStore())
 
     app.add_middleware(TrustedHostMiddleware, allowed_hosts=ALLOWED_HOSTS)
@@ -97,10 +95,9 @@ def create_app(
     )
     install_error_handlers(app)
 
-    protected = [Depends(require_session_token), Depends(require_license)]
+    protected = [Depends(require_session_token)]
     app.include_router(health.router)
     app.include_router(pair.router)  # unauthenticated: exchanges a pairing code for the token
-    app.include_router(license.router, dependencies=[Depends(require_session_token)])  # open without a license, to enter one
     for module in (settings, dashboard, candidates, jobs, applications, answers, processing, operations, system, templates):
         app.include_router(module.router, dependencies=protected)
     return app

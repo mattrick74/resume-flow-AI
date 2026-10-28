@@ -3,7 +3,6 @@ import type {
   Analytics,
   AnswerBank,
   AnswerBankEntry,
-  LicenseStatus,
   AppSettings,
   ApplicationDetail,
   ApplicationSummary,
@@ -57,8 +56,6 @@ export class ApiError extends Error {
   }
 }
 
-export const LICENSE_EVENT = "resumeflow:license";
-
 export async function apiFetch<T>(path: string, init: RequestInit = {}): Promise<T> {
   const { baseUrl, token } = await getBackendConnection();
   const headers = new Headers(init.headers);
@@ -77,8 +74,6 @@ export async function apiFetch<T>(path: string, init: RequestInit = {}): Promise
   const body = await response.json().catch(() => null);
   if (!response.ok) {
     const error = body?.error;
-    // v2.0: the license expired (or is missing) while the app was open: LicenseGate shows the license screen.
-    if (response.status === 403 && String(error?.code).startsWith("license_")) window.dispatchEvent(new Event(LICENSE_EVENT));
     throw new ApiError(
       response.status,
       error?.code ?? `http_${response.status}`,
@@ -247,11 +242,6 @@ export const api = {
     list: () => apiFetch<BackupInfo[]>("/backups"),
     create: () => post<BackupInfo>("/backups"),
     restore: (name: string) => post<{ restored: string; safety_backup: string }>("/backups/restore", { name }),
-  },
-  /** v2.0: the license key that unlocks the backend (open without a license, so one can be entered). */
-  license: {
-    get: () => apiFetch<LicenseStatus>("/license"),
-    activate: (key: string) => post<LicenseStatus>("/license", { key }),
   },
   /** v2.0: saved answers to common application questions (global, or per candidate). */
   answerBank: {
