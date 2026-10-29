@@ -3,6 +3,7 @@ import userEvent from "@testing-library/user-event";
 import { describe, expect, it } from "vitest";
 
 import type { JobSummary } from "@/lib/types";
+import { jobDetail } from "@/test/fixtures";
 import { json, mockBackend } from "@/test/mockBackend";
 import { renderApp } from "@/test/render";
 
@@ -22,6 +23,7 @@ const ALL = Array.from({ length: 60 }, (_, i) => job(i + 1));
 function setup() {
   return mockBackend({
     override: (call) => {
+      if (call.method === "GET" && call.path === "/jobs/j1") return json(jobDetail({ title: "Data Engineer 1", matches: [] }));
       if (call.method !== "GET" || call.path.split("?")[0] !== "/jobs") return undefined;
       const params = new URLSearchParams(call.path.split("?")[1] ?? "");
       const offset = Number(params.get("offset") ?? 0);
@@ -70,5 +72,18 @@ describe("job list pages", () => {
     renderApp("/jobs?filter=answers");
     await screen.findByText("1–25 of 60 jobs");
     await waitFor(() => expect(lastJobsQuery(calls).get("needs_answers")).toBe("true"));
+  });
+
+  it("opens a job at the top instead of keeping the list scroll position", async () => {
+    setup();
+    renderApp("/jobs");
+    const link = await screen.findByRole("link", { name: "Data Engineer 1" });
+    const main = document.querySelector("main")!;
+    main.scrollTop = 700;
+
+    await userEvent.click(link);
+
+    expect(await screen.findByRole("heading", { level: 1, name: "Data Engineer 1" })).toBeInTheDocument();
+    await waitFor(() => expect(main.scrollTop).toBe(0));
   });
 });

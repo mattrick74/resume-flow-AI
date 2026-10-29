@@ -1,6 +1,7 @@
 // ResumeFlow service worker: the only caller of the local backend, the bridge between the side panel and the page
 // scripts, and the submission watcher (requirements 5.1, 7).
 import { api, fetchFile, pair, saveToken, status, upload } from "./lib/backend.js";
+import { jobPostingKey, scopeLinkedState } from "./lib/page-state.js";
 
 const WATCH_MS = 120_000; // watch for the confirmation page for 2 minutes after a submit click
 
@@ -22,6 +23,14 @@ async function setTabState(tabId, patch) {
   return next;
 }
 
+async function tabStateForPage(tabId, pageUrl) {
+  const linked = await tabState(tabId);
+  const scoped = scopeLinkedState(linked, pageUrl);
+  if (!scoped.changed) return linked;
+  await chrome.storage.session.set({ [tabKey(tabId)]: scoped.state });
+  return scoped.state;
+}
+
 // The tab's link, and what the side panel showed on it (kept by the panel under panel:<id>).
 chrome.tabs.onRemoved.addListener((tabId) => chrome.storage.session.remove([tabKey(tabId), `panel:${tabId}`]));
 
@@ -31,7 +40,12 @@ chrome.tabs.onCreated.addListener(async (tab) => {
   if (tab.openerTabId === undefined) return;
   const opener = await tabState(tab.openerTabId);
   if (!opener?.applicationId && !opener?.jobId) return;
-  await setTabState(tab.id, { applicationId: opener.applicationId ?? null, jobId: opener.jobId ?? null, openedFrom: tab.openerTabId });
+  await setTabState(tab.id, {
+    applicationId: opener.applicationId ?? null,
+    jobId: opener.jobId ?? null,
+    postingKey: opener.postingKey ?? null,
+    openedFrom: tab.openerTabId,
+  });
 });
 
 const hostOf = (url) => {
@@ -60,6 +74,9 @@ async function armWatcher(tabId, armed) {
 // After a page load in a linked tab (e.g. the confirmation page after Submit), watch again; on the next page of an
 // application form being answered, answer it too.
 chrome.tabs.onUpdated.addListener(async (tabId, info) => {
+  // A selected job can change inside one SPA tab. Clear a link to a different
+  // posting before the side panel has a chance to restore it.
+  if (info.url) await tabStateForPage(tabId, info.url);
   if (info.status !== "complete") return;
   const state = await tabState(tabId);
   if (!state?.applicationId) return;
@@ -233,12 +250,18 @@ const handlers = {
   saveToken: ({ token, baseUrl }) => saveToken(token, baseUrl),
   api: ({ method, path, body }) => api(method, path, body),
   file: ({ path }) => fetchFile(path),
-  tabState: ({ tabId }) => tabState(tabId),
+  tabState: ({ tabId, pageUrl }) => tabStateForPage(tabId, pageUrl),
   linkTab: async ({ tabId, applicationId, jobId }) => {
     const previous = await tabState(tabId);
     const same = Boolean(applicationId) && previous?.applicationId === applicationId;
+    const tab = await chrome.tabs.get(tabId).catch(() => null);
     // autoAnswer: unset until the first answers for this application (then on), false once the user turns it off.
-    const state = await setTabState(tabId, { applicationId: applicationId ?? null, jobId: jobId ?? null, autoAnswer: same ? previous.autoAnswer : undefined });
+    const state = await setTabState(tabId, {
+      applicationId: applicationId ?? null,
+      jobId: jobId ?? null,
+      postingKey: jobPostingKey(tab?.url) ?? null,
+      autoAnswer: same ? previous.autoAnswer : undefined,
+    });
     if (applicationId) await armWatcher(tabId, false).catch(() => {});
     return state;
   },

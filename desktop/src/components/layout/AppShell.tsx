@@ -1,5 +1,5 @@
-import { useCallback, useEffect, useState } from "react";
-import { Outlet, useNavigate } from "react-router";
+import { useCallback, useEffect, useRef, useState } from "react";
+import { Outlet, useLocation, useNavigate } from "react-router";
 
 import { NAV_ITEMS } from "@/app/navigation";
 import { EngineOfflineBanner } from "@/components/layout/BackendGate";
@@ -19,6 +19,8 @@ function readCollapsed() {
 
 export function AppShell() {
   const navigate = useNavigate();
+  const location = useLocation();
+  const main = useRef<HTMLElement>(null);
   const [collapsed, setCollapsed] = useState(readCollapsed);
   const [paletteOpen, setPaletteOpen] = useState(false);
 
@@ -53,6 +55,15 @@ export function AppShell() {
     return () => window.removeEventListener("keydown", onKeyDown);
   }, [navigate, toggleSidebar]);
 
+  // <main> is the app's scroll container. React Router keeps this shell
+  // mounted between pages, so without an explicit reset a job detail page can
+  // open at the list's old scroll offset and appear blank or malformed.
+  useEffect(() => {
+    if (!main.current) return;
+    main.current.scrollTop = 0;
+    main.current.scrollLeft = 0;
+  }, [location.pathname, location.search]);
+
   return (
     <div className="flex h-full">
       <Sidebar collapsed={collapsed} onToggle={toggleSidebar} />
@@ -60,7 +71,7 @@ export function AppShell() {
         <TopBar onOpenPalette={() => setPaletteOpen(true)} />
         <EngineOfflineBanner />
         {/* `relative` keeps absolutely positioned descendants (e.g. Radix form inputs) inside the scroll area. */}
-        <main className="relative flex-1 overflow-y-auto">
+        <main ref={main} className="relative flex-1 overflow-y-auto">
           <div className="mx-auto w-full max-w-6xl px-8 py-8">
             <Outlet />
           </div>

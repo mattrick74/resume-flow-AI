@@ -2,6 +2,8 @@
 // questions → confirmation screen. Backend calls go through the service worker. Page data is shown with textContent only.
 // One side panel serves every tab of the window, so what each tab showed is kept per tab and put back on return.
 
+import { jobPostingKey, snapshotMatchesPosting } from "../lib/page-state.js";
+
 const $ = (id) => document.getElementById(id);
 const DONE = new Set(["EXPORTED", "SUBMITTED", "INTERVIEW", "OFFER", "REJECTED", "FAILED"]);
 const ACTIVE = new Set(["queued", "running"]);
@@ -137,6 +139,7 @@ function snapshot() {
   const value = (id) => $(id).value;
   const drafts = Object.fromEntries([...$("needs-list").querySelectorAll("input[data-field]")].map((i) => [i.dataset.field, { value: i.value, saved: i.disabled }]));
   return {
+    postingKey: jobPostingKey(state.tab?.url),
     captured: !$("captured").hidden,
     capture: state.capture,
     form: { title: value("job-title"), company: value("job-company"), location: value("job-location"), url: value("job-url"), description: value("job-description") },
@@ -163,9 +166,9 @@ function remember() {
   rememberTimer = setTimeout(rememberNow, 300);
 }
 
-async function rememberedPanel(tabId) {
-  if (panels.has(tabId)) return panels.get(tabId);
-  return (await chrome.storage.session.get(panelKey(tabId)))[panelKey(tabId)] || null;
+async function rememberedPanel(tabId, pageUrl) {
+  const snap = panels.has(tabId) ? panels.get(tabId) : (await chrome.storage.session.get(panelKey(tabId)))[panelKey(tabId)] || null;
+  return snap && snapshotMatchesPosting(snap.postingKey, pageUrl) ? snap : null;
 }
 
 /** Puts back what the user had on this tab that the backend doesn't hold: an unsaved capture, a chosen candidate, form answers. */
@@ -222,7 +225,7 @@ async function loadTab(force = false) {
     return updateButtons();
   }
   try {
-    const [linked, snap] = await Promise.all([send("tabState", { tabId: tab.id }), rememberedPanel(tab.id)]);
+    const [linked, snap] = await Promise.all([send("tabState", { tabId: tab.id, pageUrl: tab.url }), rememberedPanel(tab.id, tab.url)]);
     if (seq !== state.seq) return;
     $("auto-answer").checked = linked?.autoAnswer !== false;
     if (linked?.applicationId) await loadApplication(linked.applicationId, seq);
@@ -697,8 +700,18 @@ $("app").addEventListener("change", remember);
 document.addEventListener("visibilitychange", () => document.visibilityState === "hidden" && rememberNow());
 
 chrome.tabs.onActivated.addListener(() => loadTab());
-chrome.tabs.onUpdated.addListener((tabId, info) => {
-  if (tabId === state.tab?.id && (info.title || info.url)) $("tab-title").textContent = info.title || state.tab.title || info.url;
+chrome.tabs.onUpdated.addListener((tabId, info, tab) => {
+  if (tabId !== state.tab?.id) return;
+  if (info.title || info.url) $("tab-title").textContent = info.title || tab?.title || info.url || state.tab.title;
+  if (!info.url || info.url === state.tab.url) return;
+  // Save the old posting under its old identity before replacing the tab URL.
+  // Marking the panel unready also prevents loadTab(force) from re-saving the
+  // still-visible old UI under the new posting's identity.
+  rememberNow();
+  state.ready = false;
+  state.seq += 1; // invalidate any load that started for the previous posting
+  state.tab = { ...state.tab, ...tab, url: info.url };
+  void loadTab(true);
 });
 chrome.tabs.onRemoved.addListener((tabId) => panels.delete(tabId));
 chrome.runtime.onMessage.addListener((msg) => {

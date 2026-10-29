@@ -23,7 +23,11 @@ import { SettingsPage } from "@/pages/SettingsPage";
 export function createQueryClient() {
   return new QueryClient({
     defaultOptions: {
-      queries: { staleTime: 5_000, retry: 1 },
+      // The extension workspace is often left in a background tab while the
+      // user reads a posting. Keep its cached screen stable when focus comes
+      // back; the queries that represent live processing opt into background
+      // polling explicitly in lib/queries.ts.
+      queries: { staleTime: 5_000, retry: 1, refetchOnWindowFocus: false },
       mutations: { retry: 0 },
     },
   });

@@ -3,13 +3,17 @@ import { fireEvent, render, screen, waitFor, within } from "@testing-library/rea
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 
-import { AppProviders } from "@/App";
+import { AppProviders, createQueryClient } from "@/App";
 import { NAV_ITEMS } from "@/app/navigation";
 import { BackendGate } from "@/components/layout/BackendGate";
 import { EMPTY_SUMMARY, json, mockBackend } from "@/test/mockBackend";
 import { renderApp } from "@/test/render";
 
 describe("app shell", () => {
+  it("does not reload stale workspace data when the extension regains focus", () => {
+    expect(createQueryClient().getDefaultOptions().queries?.refetchOnWindowFocus).toBe(false);
+  });
+
   it("renders the live dashboard", async () => {
     mockBackend({ summary: { ...EMPTY_SUMMARY, generated_today: 37, awaiting_review: 4 } });
     renderApp("/");

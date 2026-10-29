@@ -18,9 +18,15 @@ type Form = {
   watchSteps(): void;
 };
 type Watch = { looksConfirmed(doc?: Document, href?: string): boolean };
+type PageState = {
+  jobPostingKey(url: string): string | null;
+  scopeLinkedState(linked: Record<string, unknown> | null, url: string): { state: Record<string, unknown> | null; changed: boolean };
+  snapshotMatchesPosting(snapshotPostingKey: string | null, url: string): boolean;
+};
 
 const sendMessage = vi.fn();
 const g = globalThis as unknown as { __resumeflowCapture: Capture; __resumeflowForm: Form; __resumeflowWatch: Watch; chrome: unknown; CSS: unknown };
+let pageState: PageState;
 
 beforeAll(async () => {
   g.chrome = { runtime: { sendMessage } };
@@ -35,6 +41,38 @@ beforeAll(async () => {
   await import("../../../extension/src/content/form.js");
   // @ts-expect-error a plain page script without types
   await import("../../../extension/src/content/watch.js");
+  // @ts-expect-error the extension helper is plain JavaScript
+  pageState = await import("../../../extension/src/lib/page-state.js");
+});
+
+describe("keeping side-panel state with the correct posting", () => {
+  it("recognizes the same LinkedIn or Indeed job across their SPA and canonical URLs", () => {
+    expect(pageState.jobPostingKey("https://www.linkedin.com/jobs/search/?currentJobId=4012345678&keywords=data")).toBe("linkedin:4012345678");
+    expect(pageState.jobPostingKey("https://www.linkedin.com/jobs/view/4012345678/")).toBe("linkedin:4012345678");
+    expect(pageState.jobPostingKey("https://www.indeed.com/jobs?q=python&vjk=abc123")).toBe("indeed:abc123");
+  });
+
+  it("drops stale linked ids when a different job is selected in the same tab", () => {
+    const linked = { jobId: "job-a", applicationId: "app-a", postingKey: "linkedin:111", autoAnswer: true };
+    expect(pageState.scopeLinkedState(linked, "https://www.linkedin.com/jobs/search/?currentJobId=222")).toEqual({
+      state: { postingKey: "linkedin:222" },
+      changed: true,
+    });
+    expect(pageState.snapshotMatchesPosting("linkedin:111", "https://www.linkedin.com/jobs/view/222/")).toBe(false);
+  });
+
+  it("keeps linked state when the same posting changes from a search URL to its canonical URL", () => {
+    const linked = { jobId: "job-a", applicationId: "app-a", postingKey: "linkedin:111" };
+    expect(pageState.scopeLinkedState(linked, "https://www.linkedin.com/jobs/view/111/")).toEqual({ state: linked, changed: false });
+    expect(pageState.snapshotMatchesPosting("linkedin:111", "https://www.linkedin.com/jobs/view/111/")).toBe(true);
+  });
+
+  it("preserves the application link while the tab moves to an ATS form", () => {
+    const linked = { jobId: "job-a", applicationId: "app-a", postingKey: "linkedin:111", autoAnswer: true };
+    expect(pageState.scopeLinkedState(linked, "https://careers.example.com/application/step/2")).toEqual({ state: linked, changed: false });
+    expect(pageState.snapshotMatchesPosting("linkedin:111", "https://careers.example.com/application/step/2")).toBe(true);
+    expect(pageState.jobPostingKey("https://boards.greenhouse.io/acme/jobs/42/apply")).toBeNull();
+  });
 });
 
 beforeEach(() => {

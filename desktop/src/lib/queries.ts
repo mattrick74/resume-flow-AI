@@ -83,7 +83,7 @@ export function useSecretMutations(name: string) {
 }
 
 export function useDashboardSummary() {
-  return useQuery({ queryKey: queryKeys.dashboard, queryFn: api.dashboard.summary, refetchInterval: 15_000 });
+  return useQuery({ queryKey: queryKeys.dashboard, queryFn: api.dashboard.summary, refetchInterval: 15_000, refetchIntervalInBackground: true });
 }
 
 // ---------------------------------------------------------------- candidates
@@ -131,6 +131,7 @@ export function useJobs(params: JobListParams = {}) {
     queryFn: () => api.jobs.list(params),
     placeholderData: keepPreviousData,
     refetchInterval: (query) => (jobsInFlight(query.state.data?.items) ? 2_000 : false),
+    refetchIntervalInBackground: true,
   });
 }
 
@@ -161,6 +162,7 @@ export function useJob(id: string) {
         job.applications.some((a) => BUSY_APPLICATION.has(a.status));
       return busy ? 2_000 : false;
     },
+    refetchIntervalInBackground: true,
   });
 }
 
@@ -182,6 +184,7 @@ export function useApplications(params: Parameters<typeof api.applications.list>
     queryKey: [...queryKeys.applications, params],
     queryFn: () => api.applications.list(params),
     refetchInterval: options.poll ? 3_000 : false,
+    refetchIntervalInBackground: true,
   });
 }
 
@@ -196,6 +199,7 @@ export function useApplication(id: string) {
       const busy = IN_PROGRESS.includes(data.status) || data.processing.some((p) => p.status === "queued" || p.status === "running");
       return busy ? 1_500 : false;
     },
+    refetchIntervalInBackground: true,
   });
 }
 
