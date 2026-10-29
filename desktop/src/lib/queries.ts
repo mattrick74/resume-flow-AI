@@ -183,6 +183,7 @@ export function useApplications(params: Parameters<typeof api.applications.list>
   return useQuery({
     queryKey: [...queryKeys.applications, params],
     queryFn: () => api.applications.list(params),
+    placeholderData: keepPreviousData,
     refetchInterval: options.poll ? 3_000 : false,
     refetchIntervalInBackground: true,
   });

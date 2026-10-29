@@ -628,6 +628,14 @@ export interface ApplicationSummary {
   exported_at: string | null;
 }
 
+/** A filtered page from GET /applications when offset is supplied. */
+export interface ApplicationList {
+  items: ApplicationSummary[];
+  total: number;
+  offset: number;
+  limit: number;
+}
+
 export interface OutputFile {
   id: string;
   type: "resume" | "cover_letter" | "job_description" | "job_url" | "metadata";

@@ -5,6 +5,7 @@ import type {
   AnswerBankEntry,
   AppSettings,
   ApplicationDetail,
+  ApplicationList,
   ApplicationSummary,
   BackupInfo,
   BatchGaps,
@@ -204,8 +205,12 @@ export const api = {
     rematch: (id: string) => post<JobDetail>(`/jobs/${id}/rematch`),
   },
   applications: {
-    list: (params: { status?: string; candidate_id?: string; date_from?: string; date_to?: string; q?: string; limit?: number } = {}) =>
-      apiFetch<ApplicationSummary[]>(`/applications${query(params)}`),
+    list: async (params: { status?: string; candidate_id?: string; date_from?: string; date_to?: string; q?: string; limit?: number; offset?: number } = {}) => {
+      const response = await apiFetch<ApplicationList | ApplicationSummary[]>(`/applications${query(params)}`);
+      if (!Array.isArray(response)) return response;
+      // Rolling-upgrade compatibility with a backend that still returns the legacy bare array.
+      return { items: response, total: response.length, offset: params.offset ?? 0, limit: params.limit ?? response.length };
+    },
     get: (id: string) => apiFetch<ApplicationDetail>(`/applications/${id}`),
     create: (body: { job_id: string; candidate_id: string; override_reason?: string | null; instructions?: string | null }) =>
       post<ApplicationDetail>("/applications", body),

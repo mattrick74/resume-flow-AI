@@ -4,6 +4,7 @@
   if (globalThis.__resumeflowForm) return;
 
   const ATTR = "data-resumeflow-id";
+  const ATTACHED_ATTR = "data-resumeflow-attached";
   const SELECTOR = "input, textarea, select, [contenteditable='true'], [role='textbox']";
   // Ids stay unique for the life of the page: the steps of a multi-step form often keep earlier steps in the page, hidden,
   // and a reused id would fill the hidden field instead of the visible one.
@@ -14,6 +15,9 @@
   const SKIP_TYPES = new Set(["hidden", "submit", "button", "image", "reset", "password", "search"]);
   const CAPTCHA = /captcha|recaptcha|hcaptcha|turnstile/i;
   const clean = (value) => (value || "").replace(/\s+/g, " ").replace(/\s*\*\s*$/, "").trim();
+  // Upload widgets commonly consume a file and clear/replace the native input. Remember successful uploads separately so
+  // a later automatic pass does not append the same resume to a multi-file widget again.
+  const attachedFiles = new Map();
 
   /** Every element in the document, including open shadow roots. */
   function allRoots(root = document, found = [document]) {
@@ -63,6 +67,45 @@
       if (text && text.length < 400 && node.querySelectorAll("input, select, textarea").length <= 1) return text;
     }
     return clean(element.getAttribute("placeholder") || element.getAttribute("name") || "");
+  }
+
+  /** A semantic identity that survives a framework replacing the native file input after an upload. */
+  function fileFieldKey(element) {
+    const root = element.getRootNode();
+    const host = root === document ? null : root.host;
+    const form = element.form;
+    const label = clean(labelFor(element)).toLowerCase();
+    const rootKey = clean(host?.id || host?.getAttribute?.("aria-label") || host?.tagName || "document").toLowerCase();
+    const formKey = clean(form?.id || form?.name || form?.getAttribute?.("action") || "form").toLowerCase();
+    const name = clean(element.name || "").toLowerCase();
+    const fallbackId = name || label ? "" : clean(element.id || "").toLowerCase();
+    const accept = clean(element.getAttribute("accept") || "").toLowerCase();
+    return `${rootKey}|${formKey}|${name}|${label}|${fallbackId}|${accept}`;
+  }
+
+  /** Small deterministic content hash; the base64 itself is never stored on the page. */
+  function fileFingerprint(item) {
+    const value = `${item.filename || ""}\0${item.mime || ""}\0${item.base64 || ""}`;
+    let hash = 2166136261;
+    for (let index = 0; index < value.length; index += 1) {
+      hash ^= value.charCodeAt(index);
+      hash = Math.imul(hash, 16777619);
+    }
+    return `rf-${(hash >>> 0).toString(36)}-${value.length}`;
+  }
+
+  function wasAttached(element, fingerprint = null) {
+    const remembered = attachedFiles.get(fileFieldKey(element));
+    if (fingerprint) return element.getAttribute(ATTACHED_ATTR) === fingerprint || remembered?.has(fingerprint) || false;
+    return element.hasAttribute(ATTACHED_ATTR) || Boolean(remembered?.size);
+  }
+
+  function rememberAttachment(element, fingerprint) {
+    const key = fileFieldKey(element);
+    const remembered = attachedFiles.get(key) || new Set();
+    remembered.add(fingerprint);
+    attachedFiles.set(key, remembered);
+    element.setAttribute(ATTACHED_ATTR, fingerprint);
   }
 
   function groupLabel(radio) {
@@ -238,7 +281,7 @@
     if (type === "checkbox") return element.checked;
     if (type === "select") return element.selectedIndex > 0 && Boolean(element.value);
     if (type === "contenteditable") return Boolean(clean(element.textContent));
-    if (type === "file") return element.files?.length > 0;
+    if (type === "file") return element.files?.length > 0 || wasAttached(element);
     return Boolean(element.value);
   }
 
@@ -274,15 +317,22 @@
     const result = { attached: 0, failed: 0 };
     for (const item of items) {
       const [input] = find(item.field_id);
-      if (!input || input.type !== "file" || (keepFilled && input.files?.length)) continue;
+      if (!input || input.type !== "file") continue;
+      const fingerprint = fileFingerprint(item);
+      // Re-running Fill must not append an identical file, even on an explicit pass. Automatic passes also preserve any
+      // file already selected by the user or attached by an earlier pass.
+      if (wasAttached(input, fingerprint) || (keepFilled && hasValue([input]))) continue;
       try {
         const bytes = Uint8Array.from(atob(item.base64), (c) => c.charCodeAt(0));
         const transfer = new DataTransfer();
         transfer.items.add(new File([bytes], item.filename, { type: item.mime }));
         input.files = transfer.files;
+        // Check and remember the assignment before dispatching events: upload widgets may clear input.files synchronously
+        // from their change handler after accepting the file.
+        const ok = input.files?.length > 0;
+        if (ok) rememberAttachment(input, fingerprint);
         input.dispatchEvent(new Event("input", { bubbles: true }));
         input.dispatchEvent(new Event("change", { bubbles: true }));
-        const ok = input.files?.length === 1;
         mark([input], ok ? "filled" : "needs", ok ? `Attached ${item.filename}` : "Attach the file yourself");
         result[ok ? "attached" : "failed"] += 1;
       } catch {

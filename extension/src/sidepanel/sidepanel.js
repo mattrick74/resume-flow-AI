@@ -249,7 +249,8 @@ async function loadApplicationChoices() {
   state.recentApps = [];
   if (!state.connected) return;
   try {
-    const apps = await api("GET", "/applications?limit=25");
+    const response = await api("GET", "/applications?limit=25");
+    const apps = Array.isArray(response) ? response : response.items ?? [];
     state.recentApps = apps;
     for (const app of apps) {
       const date = String(app.application_date || "").slice(5);

@@ -146,7 +146,11 @@ export function mockBackend(options: { summary?: DashboardSummary; settings?: Pa
       return json({ events: [], next_after_id: 0, queue_depth: 0 });
     }
     if (method === "GET" && listPath === "/jobs") return json({ items: [], total: 0, offset: 0, limit: 25 });
-    if (method === "GET" && ["/candidates", "/applications", "/backups", "/processing-jobs"].includes(listPath)) return json([]);
+    if (method === "GET" && listPath === "/applications") {
+      const params = new URL(url, "http://localhost").searchParams;
+      return json({ items: [], total: 0, offset: Number(params.get("offset") ?? 0), limit: Number(params.get("limit") ?? 25) });
+    }
+    if (method === "GET" && ["/candidates", "/backups", "/processing-jobs"].includes(listPath)) return json([]);
     if (method === "GET" && listPath === "/templates") return json(templatesResponse(state.settings.resume_template));
     if (method === "GET" && listPath === "/system/pdf-converter") {
       return json({ configured: "auto", libreoffice_path: null, word_available: true, active: "word" });

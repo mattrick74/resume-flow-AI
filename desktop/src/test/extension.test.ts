@@ -8,13 +8,17 @@ type Capture = {
   htmlToText(html: string): string;
   canonicalUrl(href: string): string;
 };
-type Field = { field_id: string; label: string; type: string; options: string[]; required: boolean; max_length: number | null };
+type Field = { field_id: string; label: string; type: string; options: string[]; required: boolean; max_length: number | null; filled: boolean };
 type Form = {
   scan(): Field[];
   fill(
     answers: { field_id: string; value: string | null; source: string; note?: string }[],
     options?: { keepFilled?: boolean },
   ): { filled: number; needs: number; failed: number; kept: number };
+  attach(
+    items: { field_id: string; base64: string; filename: string; mime: string }[],
+    options?: { keepFilled?: boolean },
+  ): { attached: number; failed: number };
   watchSteps(): void;
 };
 type Watch = { looksConfirmed(doc?: Document, href?: string): boolean };
@@ -206,6 +210,44 @@ describe("reading and filling an application form", () => {
     expect((document.getElementById("a") as HTMLInputElement).value).toBe("Ave");
     expect((document.getElementById("b") as HTMLInputElement).value).toBe("Austin");
     expect(result).toMatchObject({ filled: 1, kept: 1 });
+  });
+
+  it("does not repeatedly append the same resume when a multi-file widget clears its native input", () => {
+    document.body.innerHTML = `<form id="upload-test"><label for="resume">Resume/CV</label><input id="resume" name="resume" type="file" multiple /></form>`;
+    const input = document.getElementById("resume") as HTMLInputElement;
+    Object.defineProperty(input, "files", { configurable: true, writable: true, value: [] });
+
+    class FakeDataTransfer {
+      files: File[] = [];
+      items = { add: (file: File) => this.files.push(file) };
+    }
+
+    const originalDataTransfer = globalThis.DataTransfer;
+    Object.defineProperty(globalThis, "DataTransfer", { configurable: true, writable: true, value: FakeDataTransfer });
+    try {
+      const field = g.__resumeflowForm.scan().find((candidate) => candidate.type === "file")!;
+      const item = { field_id: field.field_id, base64: btoa("%PDF resume"), filename: "resume.pdf", mime: "application/pdf" };
+      let changes = 0;
+      input.addEventListener("change", () => {
+        changes += 1;
+        // Many upload components copy the file to their own list, then immediately empty the native input.
+        input.files = [] as unknown as FileList;
+      });
+
+      expect(g.__resumeflowForm.attach([item], { keepFilled: true })).toEqual({ attached: 1, failed: 0 });
+      expect(input.files).toHaveLength(0);
+      expect(g.__resumeflowForm.scan().find((candidate) => candidate.field_id === field.field_id)?.filled).toBe(true);
+
+      // The durable per-field fingerprint prevents both an automatic retry and a repeated manual Fill from appending it.
+      expect(g.__resumeflowForm.attach([item], { keepFilled: false })).toEqual({ attached: 0, failed: 0 });
+      expect(changes).toBe(1);
+    } finally {
+      if (originalDataTransfer) {
+        Object.defineProperty(globalThis, "DataTransfer", { configurable: true, writable: true, value: originalDataTransfer });
+      } else {
+        Reflect.deleteProperty(globalThis, "DataTransfer");
+      }
+    }
   });
 
   it("reports a new step once its fields appear, and nothing for fields already read", async () => {

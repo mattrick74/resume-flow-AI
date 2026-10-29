@@ -5,7 +5,7 @@ from typing import Any, Literal
 
 from fastapi import APIRouter, Request
 from pydantic import BaseModel, ConfigDict, Field
-from sqlalchemy import select
+from sqlalchemy import func, select
 
 from resumeflow.api.deps import DbSession
 from resumeflow.db.models import Application, Candidate, Job
@@ -60,7 +60,13 @@ def list_applications(
     date_to: date | None = None,
     q: str | None = None,
     limit: int = 200,
-) -> list[dict[str, Any]]:
+    offset: int | None = None,
+) -> list[dict[str, Any]] | dict[str, Any]:
+    """List applications newest first.
+
+    Supplying ``offset`` opts into the paged response (``items``, ``total``, ``offset`` and ``limit``). Keeping the
+    legacy array when it is omitted lets an already-open extension continue working while its workspace is reloaded.
+    """
     stmt = select(Application, Candidate.full_name, Job).join(Candidate, Candidate.id == Application.candidate_id).join(Job, Job.id == Application.job_id)
     if status:
         statuses = [PipelineStatus(s) for s in status.split(",") if s in PipelineStatus.__members__]
@@ -75,8 +81,15 @@ def list_applications(
     if q:
         like = f"%{q.strip()}%"
         stmt = stmt.where(Job.company.ilike(like) | Job.title.ilike(like) | Candidate.full_name.ilike(like))
-    rows = db.execute(stmt.order_by(Application.application_date.desc(), Application.sequence_number.desc()).limit(min(max(limit, 1), 1000)))
-    return [service.application_summary(app, name, job) for app, name, job in rows]
+    paged = offset is not None
+    total = (db.scalar(select(func.count()).select_from(stmt.subquery())) or 0) if paged else None
+    limit = min(max(limit, 1), 500 if paged else 1000)
+    page_offset = max(offset or 0, 0)
+    rows = db.execute(stmt.order_by(Application.application_date.desc(), Application.sequence_number.desc()).offset(page_offset).limit(limit))
+    items = [service.application_summary(app, name, job) for app, name, job in rows]
+    if not paged:
+        return items
+    return {"items": items, "total": total, "offset": page_offset, "limit": limit}
 
 
 @router.post("", status_code=201)
