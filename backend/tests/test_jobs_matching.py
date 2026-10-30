@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import pytest
 
+from resumeflow.db.models import ProcessingJob
 from resumeflow.devtools.sample_data import SAMPLE_CANDIDATES, SAMPLE_JOBS
+from resumeflow.domain.enums import ProcessingJobType
 from resumeflow.domain.requirements import JobRequirements
 from resumeflow.domain.skills import normalize_skill
 from resumeflow.services.jobs import heuristic_confidence, heuristic_requirements, normalize_url
@@ -58,6 +60,33 @@ def test_job_url_is_optional(client):
     assert first.json()["job_url"] == first.json()["normalized_url"] == ""
     assert second.json()["job_url"] == second.json()["normalized_url"] == ""
     assert first.json()["id"] != second.json()["id"]
+
+
+def test_job_without_applications_can_be_deleted(client):
+    job = client.post("/jobs", json=_job_payload(analyze=False)).json()
+
+    response = client.delete(f"/jobs/{job['id']}")
+
+    assert response.status_code == 204, response.text
+    assert client.get(f"/jobs/{job['id']}").status_code == 404
+
+
+def test_job_cannot_be_deleted_while_processing(client, db):
+    job = client.post("/jobs", json=_job_payload(analyze=False)).json()
+    db.add(
+        ProcessingJob(
+            job_id=job["id"],
+            job_type=ProcessingJobType.ANALYZE_JOB,
+            idempotency_key=f"delete-guard:{job['id']}",
+        )
+    )
+    db.commit()
+
+    response = client.delete(f"/jobs/{job['id']}")
+
+    assert response.status_code == 409
+    assert response.json()["error"]["code"] == "job_is_processing"
+    assert client.get(f"/jobs/{job['id']}").status_code == 200
 
 
 def test_prompt_injection_is_flagged(client):

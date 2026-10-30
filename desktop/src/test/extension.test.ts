@@ -8,6 +8,11 @@ type Capture = {
   htmlToText(html: string): string;
   canonicalUrl(href: string): string;
 };
+type CaptureQuality = {
+  looksLikeJavaScript(text: string): boolean;
+  plausibleCapture(capture: Record<string, string>): boolean;
+  pickCapture(results: { frameId: number; result: Record<string, string> }[]): Record<string, string> | null;
+};
 type Field = { field_id: string; label: string; type: string; options: string[]; required: boolean; max_length: number | null; filled: boolean };
 type Form = {
   scan(): Field[];
@@ -18,7 +23,7 @@ type Form = {
   attach(
     items: { field_id: string; base64: string; filename: string; mime: string }[],
     options?: { keepFilled?: boolean },
-  ): { attached: number; failed: number };
+  ): { attached: number; failed: number; missing: number; kept: number };
   watchSteps(): void;
 };
 type Watch = { looksConfirmed(doc?: Document, href?: string): boolean };
@@ -29,7 +34,14 @@ type PageState = {
 };
 
 const sendMessage = vi.fn();
-const g = globalThis as unknown as { __resumeflowCapture: Capture; __resumeflowForm: Form; __resumeflowWatch: Watch; chrome: unknown; CSS: unknown };
+const g = globalThis as unknown as {
+  __resumeflowCapture: Capture;
+  __resumeflowCaptureQuality: CaptureQuality;
+  __resumeflowForm: Form;
+  __resumeflowWatch: Watch;
+  chrome: unknown;
+  CSS: unknown;
+};
 let pageState: PageState;
 
 beforeAll(async () => {
@@ -39,6 +51,8 @@ beforeAll(async () => {
   Element.prototype.getClientRects = function () {
     return [{ width: 10, height: 10 }] as unknown as DOMRectList;
   };
+  // @ts-expect-error a classic-script-compatible extension helper without types
+  await import("../../../extension/src/lib/capture-quality.js");
   // @ts-expect-error a plain page script without types
   await import("../../../extension/src/content/capture.js");
   // @ts-expect-error a plain page script without types
@@ -97,11 +111,14 @@ describe("capturing a job posting", () => {
           hiringOrganization: { "@type": "Organization", name: "Acme Data Co" },
           jobLocation: { "@type": "Place", address: { addressLocality: "Austin", addressRegion: "TX" } },
           employmentType: ["FULL_TIME"],
-          description: "<p>Build pipelines.</p><ul><li>Python</li><li>Spark &amp; Airflow</li></ul>",
+          description:
+            "<p>Build pipelines.</p><ul><li>Python</li><li>Spark &amp; Airflow</li></ul><script>Function.prototype.bind;Object.defineProperty(window, 'bad', {value: true});</script><style>.bad{display:none}</style>",
         },
       ],
     };
-    document.head.innerHTML = `<script type="application/ld+json">${JSON.stringify(posting)}</script>`;
+    // Real pages escape '<' inside JSON-LD so an HTML fragment cannot terminate the surrounding script element.
+    const safeJsonLd = JSON.stringify(posting).replaceAll("<", "\\u003c");
+    document.head.innerHTML = `<script type="application/ld+json">${safeJsonLd}</script>`;
     const job = g.__resumeflowCapture.readJsonLd();
     expect(job).toMatchObject({ title: "Senior Data Engineer", company: "Acme Data Co", location: "Austin, TX", employment_type: "FULL_TIME" });
     expect(job?.description).toBe("Build pipelines.\n\n- Python\n- Spark & Airflow");
@@ -128,6 +145,104 @@ describe("capturing a job posting", () => {
     expect(canonicalUrl("https://www.linkedin.com/jobs/search/?currentJobId=4012345678&keywords=data")).toBe("https://www.linkedin.com/jobs/view/4012345678/");
     expect(canonicalUrl("https://www.indeed.com/jobs?q=python&vjk=abc123")).toBe("https://www.indeed.com/viewjob?jk=abc123");
     expect(canonicalUrl("https://boards.greenhouse.io/acme/jobs/42?gh_src=x&utm_source=li#app")).toBe("https://boards.greenhouse.io/acme/jobs/42?gh_src=x");
+  });
+
+  it("excludes script, style and template source from page-text capture", () => {
+    const prose = "We are hiring a software engineer to build reliable services. Responsibilities include API design, testing, and production support. Qualified candidates have relevant experience and strong communication skills. ".repeat(4);
+    const bundled = "!function(){Function.prototype.bind;Object.defineProperty(window,'x',{value:1});Symbol.toStringTag;return window.x;}();".repeat(120);
+    document.body.innerHTML = `<main><h1>Software Engineer</h1><p>${prose}</p><script>script-sentinel:${bundled}</script><style>.style-sentinel{display:none}</style><template>template-sentinel</template></main>`;
+
+    const captured = g.__resumeflowCapture.capture();
+    expect(captured).toMatchObject({ title: "Software Engineer", read_by: "page text" });
+    expect(captured.description).toContain("Responsibilities include API design");
+    expect(captured.description).not.toContain("script-sentinel");
+    expect(captured.description).not.toContain("style-sentinel");
+    expect(captured.description).not.toContain("template-sentinel");
+  });
+
+  it("detects bundled JavaScript without rejecting normal JavaScript job prose", () => {
+    const bundled = "!function(){Function.prototype.bind;Object.defineProperty(exports,'__esModule',{value:!0});Symbol.toStringTag;return function(e){var t=e=>e+1;return t(e)}}();".repeat(80);
+    const job = "We are hiring a JavaScript engineer. In this role, you will design application functions, work with Node.js, review code, and improve services. Responsibilities include testing and production support. Candidates need five years of experience and strong communication skills.".repeat(3);
+
+    expect(g.__resumeflowCaptureQuality.looksLikeJavaScript(bundled)).toBe(true);
+    expect(g.__resumeflowCaptureQuality.looksLikeJavaScript(job)).toBe(false);
+  });
+
+  it("keeps a deliberately selected technical description even when it contains code", () => {
+    const selectedCode = "!function(){Function.prototype.bind;Object.defineProperty(exports,'__esModule',{value:!0});Symbol.toStringTag;return function(e){var t=e=>e+1;return t(e)}}();".repeat(30);
+    const selected = {
+      url: "https://careers.example.com/jobs/42",
+      title: "JavaScript Engineer",
+      company: "Example Co",
+      location: "Remote",
+      description: selectedCode,
+      read_by: "selection",
+      page_title: "JavaScript Engineer",
+      site: "careers.example.com",
+    };
+
+    expect(g.__resumeflowCaptureQuality.pickCapture([{ frameId: 0, result: selected }])?.description).toBe(selectedCode);
+  });
+
+  it("keeps a real top-frame job instead of a longer Twitter widget bundle", () => {
+    const top = {
+      url: "https://careers.ascensus.com/jobs/software-engineer",
+      title: "Software Engineer",
+      company: "Ascensus",
+      location: "Orlando, FL",
+      description: "Responsibilities include building reliable software and supporting production systems. Qualified candidates have software engineering experience, technical skills, and a relevant degree. Compensation and benefits are provided. ".repeat(8),
+      read_by: "page text",
+      page_title: "Software Engineer - Ascensus",
+      site: "careers.ascensus.com",
+    };
+    const widget = {
+      url: "https://platform.twitter.com/embed/Tweet.html",
+      title: "Twitter Widget Iframe",
+      company: "",
+      location: "",
+      description: "!function(){Function.prototype.bind;Object.defineProperty(exports,'__esModule',{value:!0});Symbol.toStringTag;return function(e){var t=e=>e+1;return t(e)}}();".repeat(500),
+      read_by: "page text",
+      page_title: "Twitter Widget Iframe",
+      site: "platform.twitter.com",
+    };
+
+    const picked = g.__resumeflowCaptureQuality.pickCapture([
+      { frameId: 0, result: top },
+      { frameId: 17, result: widget },
+    ]);
+    expect(picked).toMatchObject({ title: "Software Engineer", url: top.url, page_title: top.page_title });
+    expect(picked?.description).toBe(top.description.trim());
+    expect(picked?.description).not.toContain("Function.prototype.bind");
+  });
+
+  it("still accepts a legitimate embedded job frame that mentions JavaScript", () => {
+    const top = {
+      url: "https://careers.example.com/openings/42",
+      title: "Career Opportunities",
+      company: "Example Co",
+      location: "",
+      description: "Explore career opportunities at Example Co.",
+      read_by: "page text",
+      page_title: "Example Co Careers",
+      site: "careers.example.com",
+    };
+    const embedded = {
+      url: "https://jobs.vendor.example/posting/42",
+      title: "Senior JavaScript Engineer",
+      company: "Example Co",
+      location: "Remote",
+      description: "We are hiring a Senior JavaScript Engineer. Responsibilities include designing Node.js services, reviewing code, and supporting production. Qualifications include six years of software experience, API design skills, and a relevant degree. The position includes salary and benefits. ".repeat(5),
+      read_by: "page text",
+      page_title: "Senior JavaScript Engineer",
+      site: "jobs.vendor.example",
+    };
+
+    const picked = g.__resumeflowCaptureQuality.pickCapture([
+      { frameId: 0, result: top },
+      { frameId: 3, result: embedded },
+    ]);
+    expect(picked).toMatchObject({ title: "Senior JavaScript Engineer", url: top.url, page_title: top.page_title });
+    expect(picked?.description).toBe(embedded.description.trim());
   });
 });
 
@@ -234,12 +349,12 @@ describe("reading and filling an application form", () => {
         input.files = [] as unknown as FileList;
       });
 
-      expect(g.__resumeflowForm.attach([item], { keepFilled: true })).toEqual({ attached: 1, failed: 0 });
+      expect(g.__resumeflowForm.attach([item], { keepFilled: true })).toEqual({ attached: 1, failed: 0, missing: 0, kept: 0 });
       expect(input.files).toHaveLength(0);
       expect(g.__resumeflowForm.scan().find((candidate) => candidate.field_id === field.field_id)?.filled).toBe(true);
 
       // The durable per-field fingerprint prevents both an automatic retry and a repeated manual Fill from appending it.
-      expect(g.__resumeflowForm.attach([item], { keepFilled: false })).toEqual({ attached: 0, failed: 0 });
+      expect(g.__resumeflowForm.attach([item], { keepFilled: false })).toEqual({ attached: 0, failed: 0, missing: 0, kept: 1 });
       expect(changes).toBe(1);
     } finally {
       if (originalDataTransfer) {
@@ -248,6 +363,93 @@ describe("reading and filling an application form", () => {
         Reflect.deleteProperty(globalThis, "DataTransfer");
       }
     }
+  });
+
+  it("recognizes a replaced resume field after the upload widget changes its label", () => {
+    document.body.innerHTML = `<form id="rerender-upload"><label for="resume-before">Upload your resume</label><input id="resume-before" name="candidate_resume_rerender" type="file" /></form>`;
+    const input = document.getElementById("resume-before") as HTMLInputElement;
+    Object.defineProperty(input, "files", { configurable: true, writable: true, value: [] });
+
+    class FakeDataTransfer {
+      files: File[] = [];
+      items = { add: (file: File) => this.files.push(file) };
+    }
+
+    const originalDataTransfer = globalThis.DataTransfer;
+    Object.defineProperty(globalThis, "DataTransfer", { configurable: true, writable: true, value: FakeDataTransfer });
+    try {
+      const firstField = g.__resumeflowForm.scan().find((candidate) => candidate.type === "file")!;
+      const firstItem = { field_id: firstField.field_id, base64: btoa("%PDF rerender"), filename: "resume.pdf", mime: "application/pdf" };
+      let changes = 0;
+      input.addEventListener("change", () => {
+        changes += 1;
+        // ATS upload widgets commonly replace this entire control after parsing the resume.
+        document.querySelector("form")!.innerHTML = `<span>Resume.pdf</span><label for="resume-after">Replace Resume</label><input id="resume-after" name="candidate_resume_rerender" type="file" />`;
+        Object.defineProperty(document.getElementById("resume-after"), "files", { configurable: true, writable: true, value: [] });
+      });
+
+      expect(g.__resumeflowForm.attach([firstItem], { keepFilled: true })).toEqual({ attached: 1, failed: 0, missing: 0, kept: 0 });
+
+      const replacedField = g.__resumeflowForm.scan().find((candidate) => candidate.type === "file")!;
+      const repeatedItem = { ...firstItem, field_id: replacedField.field_id };
+      expect(replacedField.label).toBe("Replace Resume");
+      expect(replacedField.filled).toBe(true);
+      expect(g.__resumeflowForm.attach([repeatedItem], { keepFilled: false })).toEqual({ attached: 0, failed: 0, missing: 0, kept: 1 });
+      expect(changes).toBe(1);
+    } finally {
+      if (originalDataTransfer) {
+        Object.defineProperty(globalThis, "DataTransfer", { configurable: true, writable: true, value: originalDataTransfer });
+      } else {
+        Reflect.deleteProperty(globalThis, "DataTransfer");
+      }
+    }
+  });
+
+  it("keeps generic resume and cover-letter upload controls independent", () => {
+    document.body.innerHTML = `<form id="two-file-fields">
+      <label for="generic-resume">Resume</label><input id="generic-resume" name="file" type="file" />
+      <label for="generic-cover">Cover Letter</label><input id="generic-cover" name="file" type="file" />
+    </form>`;
+    for (const input of document.querySelectorAll("input[type='file']")) {
+      Object.defineProperty(input, "files", { configurable: true, writable: true, value: [] });
+    }
+
+    class FakeDataTransfer {
+      files: File[] = [];
+      items = { add: (file: File) => this.files.push(file) };
+    }
+
+    const originalDataTransfer = globalThis.DataTransfer;
+    Object.defineProperty(globalThis, "DataTransfer", { configurable: true, writable: true, value: FakeDataTransfer });
+    try {
+      const fields = g.__resumeflowForm.scan();
+      const resume = fields.find((field) => field.label === "Resume")!;
+      const cover = fields.find((field) => field.label === "Cover Letter")!;
+      const resumeItem = { field_id: resume.field_id, base64: btoa("resume"), filename: "resume.pdf", mime: "application/pdf" };
+      const coverItem = { field_id: cover.field_id, base64: btoa("cover"), filename: "cover-letter.pdf", mime: "application/pdf" };
+
+      expect(g.__resumeflowForm.attach([resumeItem])).toMatchObject({ attached: 1, failed: 0 });
+      const rescanned = g.__resumeflowForm.scan();
+      expect(rescanned.find((field) => field.label === "Resume")?.filled).toBe(true);
+      expect(rescanned.find((field) => field.label === "Cover Letter")?.filled).toBe(false);
+      expect(g.__resumeflowForm.attach([coverItem])).toMatchObject({ attached: 1, failed: 0 });
+    } finally {
+      if (originalDataTransfer) {
+        Object.defineProperty(globalThis, "DataTransfer", { configurable: true, writable: true, value: originalDataTransfer });
+      } else {
+        Reflect.deleteProperty(globalThis, "DataTransfer");
+      }
+    }
+  });
+
+  it("reports a file field that was replaced between scanning and attachment", () => {
+    document.body.innerHTML = `<label for="gone-resume">Resume</label><input id="gone-resume" name="gone_resume" type="file" />`;
+    const field = g.__resumeflowForm.scan().find((candidate) => candidate.type === "file")!;
+    document.getElementById("gone-resume")!.remove();
+
+    expect(
+      g.__resumeflowForm.attach([{ field_id: field.field_id, base64: btoa("resume"), filename: "resume.pdf", mime: "application/pdf" }]),
+    ).toEqual({ attached: 0, failed: 0, missing: 1, kept: 0 });
   });
 
   it("reports a new step once its fields appear, and nothing for fields already read", async () => {

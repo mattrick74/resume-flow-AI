@@ -2,6 +2,8 @@
 // posting's structured data (schema.org JobPosting, published by most applicant tracking systems), then the page's
 // main text. A text selection of 200+ characters is used as the description as-is.
 (() => {
+  const quality = globalThis.__resumeflowCaptureQuality;
+  const EXCLUDED_TEXT = "script, style, noscript, template, svg, canvas, iframe";
   const SITES = [
     {
       site: "linkedin",
@@ -90,7 +92,12 @@
   function textOf(element) {
     if (!element) return "";
     if (element.tagName === "IMG") return clean(element.getAttribute("alt"));
-    return clean(element.innerText || element.textContent || "");
+    // innerText already excludes non-rendered script/style contents. If the browser supplies it, an empty string is a
+    // real result and must not fall through to textContent (the source of 60k minified-widget captures).
+    if (typeof element.innerText === "string") return clean(element.innerText);
+    const readable = element.cloneNode(true);
+    readable.querySelectorAll?.(EXCLUDED_TEXT).forEach((node) => node.remove());
+    return clean(readable.textContent || "");
   }
 
   function first(selectors, root = document) {
@@ -114,6 +121,7 @@
       .replace(/<\s*li[^>]*>/gi, "\n- ")
       .replace(/<\/\s*(p|div|h[1-6]|ul|ol|section|tr|table|header|footer)\s*>/gi, "\n"); // a list item ends where the next one starts
     const doc = new DOMParser().parseFromString(`<body>${marked}</body>`, "text/html");
+    doc.body.querySelectorAll(EXCLUDED_TEXT).forEach((node) => node.remove());
     return clean(doc.body.textContent || "")
       .split("\n")
       .map((line) => line.trim())
@@ -159,16 +167,26 @@
   }
 
   function mainText() {
-    const candidates = ["[class*='job-description']", "[id*='job-description']", "[class*='jobDescription']", "[id*='jobDescription']", "article", "main", "[role='main']"];
-    let best = "";
-    for (const selector of candidates) {
+    const candidates = [
+      ["[class*='job-description']", "job description element"],
+      ["[id*='job-description']", "job description element"],
+      ["[class*='jobDescription']", "job description element"],
+      ["[id*='jobDescription']", "job description element"],
+      ["article", "page text"],
+      ["main", "page text"],
+      ["[role='main']", "page text"],
+    ];
+    let best = { text: "", read_by: "page text" };
+    for (const [selector, readBy] of candidates) {
       for (const element of document.querySelectorAll(selector)) {
         const text = textOf(element);
-        if (text.length > best.length && text.length < 60_000) best = text;
+        if (text.length > best.text.length && text.length < 60_000 && !quality?.looksLikeJavaScript(text)) best = { text, read_by: readBy };
       }
-      if (best.length >= 400) return best;
+      if (best.text.length >= 400) return best;
     }
-    return best || textOf(document.body).slice(0, 60_000);
+    const body = textOf(document.body).slice(0, 60_000);
+    if (best.text || quality?.looksLikeJavaScript(body)) return best;
+    return { text: body, read_by: "page text" };
   }
 
   /** The posting's own address: LinkedIn and Indeed search pages show the job in a pane with its id in the query. */
@@ -201,8 +219,14 @@
     const fromSite = site
       ? { title: first(site.title), company: first(site.company), location: first(site.location), description: first(site.description) }
       : {};
-    const description =
-      (selection.length >= 200 && selection) || fromSite.description || ld?.description || mainText();
+    const choices = [
+      selection.length >= 200 ? { text: selection, read_by: "selection" } : null,
+      fromSite.description ? { text: fromSite.description, read_by: site.site } : null,
+      ld?.description ? { text: ld.description, read_by: "structured data" } : null,
+    ];
+    const chosen =
+      choices.find((candidate) => candidate?.text && (candidate.read_by === "selection" || !quality?.looksLikeJavaScript(candidate.text))) || mainText();
+    const description = chosen.text || "";
     const title = fromSite.title || ld?.title || meta("og:title") || first(["h1"]) || clean(document.title);
     return {
       url: canonicalUrl(),
@@ -213,7 +237,7 @@
       description: description.slice(0, 100_000),
       site: location.hostname.replace(/^www\./, ""),
       page_title: clean(document.title).slice(0, 300),
-      read_by: selection.length >= 200 ? "selection" : fromSite.description ? site.site : ld?.description ? "structured data" : "page text",
+      read_by: chosen.read_by,
     };
   }
 

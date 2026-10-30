@@ -78,9 +78,15 @@
     const rootKey = clean(host?.id || host?.getAttribute?.("aria-label") || host?.tagName || "document").toLowerCase();
     const formKey = clean(form?.id || form?.name || form?.getAttribute?.("action") || "form").toLowerCase();
     const name = clean(element.name || "").toLowerCase();
-    const fallbackId = name || label ? "" : clean(element.id || "").toLowerCase();
+    const role = /\bcover\s*letter\b/.test(label) ? "cover-letter" : /\b(?:resume|curriculum vitae|cv)\b/.test(label) ? "resume" : "";
+    const inputs = [...(form || root).querySelectorAll("input[type='file']")];
+    const slot = Math.max(0, inputs.indexOf(element));
+    const identity = name || role || clean(element.id || "").toLowerCase() || `file-${slot}`;
+    // The semantic role separates generic controls such as name="file" while remaining stable when the widget changes
+    // its label from "Upload resume" to "Resume.pdf / Replace Resume". A slot separates other generic file controls.
+    const discriminator = role || `slot-${slot}`;
     const accept = clean(element.getAttribute("accept") || "").toLowerCase();
-    return `${rootKey}|${formKey}|${name}|${label}|${fallbackId}|${accept}`;
+    return `${rootKey}|${formKey}|${identity}|${discriminator}|${accept}`;
   }
 
   /** Small deterministic content hash; the base64 itself is never stored on the page. */
@@ -314,14 +320,20 @@
 
   /** Puts the generated PDF into file inputs, where the site accepts a programmatic file (EXT-10). */
   function attach(items, { keepFilled = false } = {}) {
-    const result = { attached: 0, failed: 0 };
+    const result = { attached: 0, failed: 0, missing: 0, kept: 0 };
     for (const item of items) {
       const [input] = find(item.field_id);
-      if (!input || input.type !== "file") continue;
+      if (!input || input.type !== "file") {
+        result.missing += 1;
+        continue;
+      }
       const fingerprint = fileFingerprint(item);
       // Re-running Fill must not append an identical file, even on an explicit pass. Automatic passes also preserve any
       // file already selected by the user or attached by an earlier pass.
-      if (wasAttached(input, fingerprint) || (keepFilled && hasValue([input]))) continue;
+      if (wasAttached(input, fingerprint) || (keepFilled && hasValue([input]))) {
+        result.kept += 1;
+        continue;
+      }
       try {
         const bytes = Uint8Array.from(atob(item.base64), (c) => c.charCodeAt(0));
         const transfer = new DataTransfer();

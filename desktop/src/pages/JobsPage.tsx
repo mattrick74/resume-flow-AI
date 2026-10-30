@@ -1,4 +1,4 @@
-import { Briefcase, CircleAlert, Clock, FilePlus2, Files, LoaderCircle, MessageCircleQuestion, Search, Sparkles } from "lucide-react";
+import { Briefcase, CircleAlert, Clock, FilePlus2, Files, LoaderCircle, MessageCircleQuestion, Search, Sparkles, Trash2 } from "lucide-react";
 import { useEffect, useState } from "react";
 import { Link, useNavigate, useSearchParams } from "react-router";
 import { toast } from "sonner";
@@ -13,11 +13,12 @@ import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Input } from "@/components/ui/input";
+import { Modal } from "@/components/ui/modal";
 import { Progress } from "@/components/ui/progress";
 import { Segmented } from "@/components/ui/segmented";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
-import { jobsInFlight, useDashboardSummary, useJobs, useProcessJobs } from "@/lib/queries";
+import { jobsInFlight, useDashboardSummary, useDeleteJob, useJobs, useProcessJobs } from "@/lib/queries";
 import type { JobSummary, QueueResult } from "@/lib/types";
 import { formatRelativeTime } from "@/lib/utils";
 
@@ -39,6 +40,14 @@ export function canProcess(job: JobSummary) {
   const active = job.processing?.status === "queued" || job.processing?.status === "running";
   const openApplication = job.application && job.application.status !== "FAILED" && job.application.status !== "REJECTED";
   return !active && !openApplication && job.status !== "ANALYZING";
+}
+
+function deleteBlockReason(job: JobSummary) {
+  if ((job.applications ?? 0) > 0) return "Jobs with generated applications are kept to preserve their application history and documents.";
+  if (job.status === "ANALYZING" || job.processing?.status === "queued" || job.processing?.status === "running") {
+    return "Wait for this job to finish processing before deleting it.";
+  }
+  return null;
 }
 
 function ProgressCell({ job, onRetry, retrying, onAnswer }: { job: JobSummary; onRetry: () => void; retrying: boolean; onAnswer: () => void }) {
@@ -129,6 +138,7 @@ export function JobsPage() {
   const [params, setParams] = useSearchParams();
   const [search, setSearch] = useState("");
   const [selected, setSelected] = useState<Set<string>>(new Set());
+  const [deleting, setDeleting] = useState<JobSummary | null>(null);
   const filterParam = params.get("filter");
   const filter: Filter = isFilter(filterParam) ? filterParam : "all";
   const setFilter = (next: Filter) => {
@@ -171,6 +181,7 @@ export function JobsPage() {
   });
   const summary = useDashboardSummary();
   const processJobs = useProcessJobs();
+  const deleteJob = useDeleteJob();
   const waiting = summary.data?.saved_jobs ?? 0;
   const needAnswers = summary.data?.jobs_needing_confirmation ?? 0;
   const answering = params.get("answer") === "1";
@@ -315,6 +326,9 @@ export function JobsPage() {
                 <TableHead>Top candidate</TableHead>
                 <TableHead className="text-right">Eligible</TableHead>
                 <TableHead className="text-right">Added</TableHead>
+                <TableHead className="w-12">
+                  <span className="sr-only">Actions</span>
+                </TableHead>
               </TableRow>
             </TableHeader>
             <TableBody>
@@ -341,6 +355,20 @@ export function JobsPage() {
                     <TableCell>{job.top_candidate ?? <span className="text-muted-foreground">—</span>}</TableCell>
                     <TableCell className="text-right tabular-nums">{job.status === "DRAFT" ? "—" : (job.eligible_count ?? 0)}</TableCell>
                     <TableCell className="text-right text-xs text-muted-foreground">{formatRelativeTime(job.created_at)}</TableCell>
+                    <TableCell onClick={(e) => e.stopPropagation()}>
+                      <Button
+                        type="button"
+                        variant="ghost"
+                        size="icon-sm"
+                        className="text-muted-foreground hover:bg-destructive/10 hover:text-destructive"
+                        disabled={deleteBlockReason(job) !== null}
+                        title={deleteBlockReason(job) ?? `Delete ${label}`}
+                        aria-label={`Delete ${label}`}
+                        onClick={() => setDeleting(job)}
+                      >
+                        <Trash2 />
+                      </Button>
+                    </TableCell>
                   </TableRow>
                 );
               })}
@@ -350,6 +378,40 @@ export function JobsPage() {
       )}
       {total > 0 && <Pagination page={page} pageSize={size} total={total} onPage={(next) => setPaging(next)} onPageSize={(next) => setPaging(1, next)} label="jobs" />}
       <BatchConfirmDialog open={answering} onOpenChange={setAnswering} />
+      <Modal
+        open={deleting !== null}
+        onOpenChange={(open) => !open && !deleteJob.isPending && setDeleting(null)}
+        title={`Delete ${deleting?.title ?? "this job"}?`}
+        description="This permanently removes the saved job and its matching history. Candidate profiles are not affected. This cannot be undone."
+        footer={
+          <>
+            <Button variant="ghost" disabled={deleteJob.isPending} onClick={() => setDeleting(null)}>
+              Cancel
+            </Button>
+            <Button
+              variant="destructive"
+              disabled={deleteJob.isPending}
+              onClick={() =>
+                deleting &&
+                deleteJob.mutate(deleting.id, {
+                  onSuccess: () => {
+                    setSelected((current) => {
+                      const next = new Set(current);
+                      next.delete(deleting.id);
+                      return next;
+                    });
+                    setDeleting(null);
+                    toast.success("Job deleted");
+                  },
+                  onError: (error) => toast.error("Couldn't delete job", { description: describeError(error) }),
+                })
+              }
+            >
+              <Trash2 /> {deleteJob.isPending ? "Deleting…" : "Delete job"}
+            </Button>
+          </>
+        }
+      />
     </>
   );
 }

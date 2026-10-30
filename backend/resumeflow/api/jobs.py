@@ -10,7 +10,7 @@ from sqlalchemy import delete, func, select
 
 from resumeflow.api.deps import AI, DbSession
 from resumeflow.db.models import Application, Candidate, CandidateMatch, Job, ProcessingJob
-from resumeflow.domain.enums import PipelineStatus, ProcessingJobType
+from resumeflow.domain.enums import PipelineStatus, ProcessingJobType, ProcessingStatus
 from resumeflow.domain.requirements import JobRequirements
 from resumeflow.errors import AppError
 from resumeflow.services import batch, experience
@@ -282,6 +282,16 @@ def delete_job(job_id: str, db: DbSession) -> Response:
     job = service.get_job(db, job_id)
     if db.scalar(select(func.count()).select_from(Application).where(Application.job_id == job.id)):
         raise AppError(409, "job_has_applications", "This job has applications and can't be deleted.")
+    active_processing = db.scalar(
+        select(func.count())
+        .select_from(ProcessingJob)
+        .where(
+            ProcessingJob.job_id == job.id,
+            ProcessingJob.status.in_((ProcessingStatus.QUEUED, ProcessingStatus.RUNNING)),
+        )
+    )
+    if job.status == PipelineStatus.ANALYZING or active_processing:
+        raise AppError(409, "job_is_processing", "Wait for this job to finish processing before deleting it.")
     db.delete(job)
     db.commit()
     return Response(status_code=204)

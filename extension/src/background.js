@@ -1,7 +1,11 @@
 // ResumeFlow service worker: the only caller of the local backend, the bridge between the side panel and the page
 // scripts, and the submission watcher (requirements 5.1, 7).
 import { api, fetchFile, pair, saveToken, status, upload } from "./lib/backend.js";
+import { attachmentEntry, attachmentFingerprint, forgetAttachment, recordAttachment, shouldAttachFile } from "./lib/attachment-ledger.js";
+import "./lib/capture-quality.js";
 import { jobPostingKey, scopeLinkedState } from "./lib/page-state.js";
+
+const { pickCapture } = globalThis.__resumeflowCaptureQuality;
 
 const WATCH_MS = 120_000; // watch for the confirmation page for 2 minutes after a submit click
 
@@ -12,6 +16,7 @@ chrome.runtime.onStartup.addListener(openOnAction);
 // ---------------------------------------------------------------- tabs linked to an application
 
 const tabKey = (tabId) => `tab:${tabId}`;
+const tabAttachmentsKey = (tabId) => `tab:${tabId}:attachments`;
 
 async function tabState(tabId) {
   return (await chrome.storage.session.get(tabKey(tabId)))[tabKey(tabId)] || null;
@@ -23,6 +28,14 @@ async function setTabState(tabId, patch) {
   return next;
 }
 
+async function tabAttachments(tabId) {
+  return (await chrome.storage.session.get(tabAttachmentsKey(tabId)))[tabAttachmentsKey(tabId)] || {};
+}
+
+async function setTabAttachments(tabId, ledger) {
+  await chrome.storage.session.set({ [tabAttachmentsKey(tabId)]: ledger });
+}
+
 async function tabStateForPage(tabId, pageUrl) {
   const linked = await tabState(tabId);
   const scoped = scopeLinkedState(linked, pageUrl);
@@ -32,7 +45,7 @@ async function tabStateForPage(tabId, pageUrl) {
 }
 
 // The tab's link, and what the side panel showed on it (kept by the panel under panel:<id>).
-chrome.tabs.onRemoved.addListener((tabId) => chrome.storage.session.remove([tabKey(tabId), `panel:${tabId}`]));
+chrome.tabs.onRemoved.addListener((tabId) => chrome.storage.session.remove([tabKey(tabId), tabAttachmentsKey(tabId), `panel:${tabId}`]));
 
 // The application form is often on another site, opened in a new tab from the job page (Apply): that tab gets the
 // job page's application.
@@ -59,7 +72,7 @@ const hostOf = (url) => {
 // ---------------------------------------------------------------- page scripts
 
 async function inject(tabId, file, allFrames = false) {
-  await chrome.scripting.executeScript({ target: { tabId, allFrames }, files: [file] });
+  await chrome.scripting.executeScript({ target: { tabId, allFrames }, files: Array.isArray(file) ? file : [file] });
 }
 
 function run(tabId, func, args = [], { allFrames = false, frameIds } = {}) {
@@ -87,7 +100,6 @@ chrome.tabs.onUpdated.addListener(async (tabId, info) => {
     // No permission for this site yet: Capture now in the side panel still works after allowing it.
   }
   if (state.autoAnswer && !armed) {
-    autoRuns.delete(tabId);
     scheduleAutoAnswer(tabId, 1500);
   }
 });
@@ -131,14 +143,6 @@ async function onPageMessage(message, sender) {
 
 // ---------------------------------------------------------------- requests from the side panel and options page
 
-function pickCapture(results) {
-  // The top frame's reading, unless a frame (e.g. an embedded job board) holds a clearly longer description.
-  const readings = results.map((r) => r.result).filter(Boolean);
-  const top = results.find((r) => r.frameId === 0)?.result || readings[0] || null;
-  const longest = readings.reduce((best, r) => ((r.description || "").length > (best?.description || "").length ? r : best), top);
-  return longest && top && (longest.description || "").length > 1.5 * (top.description || "").length ? { ...longest, url: top.url, page_title: top.page_title } : top;
-}
-
 async function fileFor(applicationId, kind) {
   try {
     return await fetchFile(`/applications/${applicationId}/files/${kind}?format=pdf`);
@@ -156,7 +160,29 @@ async function scanForm(tabId) {
   return results.flatMap((r) => (r.result || []).map((field) => ({ ...field, field_id: `${r.frameId}:${field.field_id}` })));
 }
 
-async function fillForm(tabId, applicationId, answers, { keepFilled = false } = {}) {
+// Manual and automatic answering can overlap around a fast ATS rerender. Serialize the file decision and reservation for
+// a tab so both runs cannot observe an empty ledger and attach the same resume.
+const attachmentQueues = new Map();
+
+function withAttachmentLock(tabId, action) {
+  const previous = attachmentQueues.get(tabId) || Promise.resolve();
+  const current = previous.catch(() => {}).then(action);
+  const settled = current.then(
+    () => undefined,
+    () => undefined,
+  );
+  attachmentQueues.set(tabId, settled);
+  settled.then(() => {
+    if (attachmentQueues.get(tabId) === settled) attachmentQueues.delete(tabId);
+  });
+  return current;
+}
+
+function fillForm(tabId, applicationId, answers, options = {}) {
+  return withAttachmentLock(tabId, () => fillFormLocked(tabId, applicationId, answers, options));
+}
+
+async function fillFormLocked(tabId, applicationId, answers, { keepFilled = false, answerHost = "" } = {}) {
   const byFrame = new Map();
   for (const answer of answers) {
     const [frame, ...rest] = answer.field_id.split(":");
@@ -166,19 +192,70 @@ async function fillForm(tabId, applicationId, answers, { keepFilled = false } = 
   }
   const files = {};
   const summary = { filled: 0, needs: 0, attached: 0, failed: 0, kept: 0 };
+  let attachmentLedger = await tabAttachments(tabId);
+  const remember = async (kind, fingerprint, status) => {
+    attachmentLedger = recordAttachment(attachmentLedger, { applicationId, answerHost, kind, fingerprint, status });
+    await setTabAttachments(tabId, attachmentLedger);
+  };
+  const forget = async (kind) => {
+    attachmentLedger = forgetAttachment(attachmentLedger, applicationId, answerHost, kind);
+    await setTabAttachments(tabId, attachmentLedger);
+  };
   for (const [frameId, items] of byFrame) {
-    const fileItems = [];
-    for (const item of items.filter((i) => i.source === "file" && i.value)) {
-      files[item.value] ||= await fileFor(applicationId, item.value).catch(() => null);
-      if (files[item.value]) fileItems.push({ field_id: item.field_id, ...files[item.value] });
-    }
     const options = { keepFilled };
     const [filled] = await run(tabId, (list, opts) => globalThis.__resumeflowForm.fill(list, opts), [items.filter((i) => i.source !== "file"), options], { frameIds: [frameId] });
     for (const key of ["filled", "needs", "failed", "kept"]) summary[key] += filled?.result?.[key] || 0;
-    if (fileItems.length) {
-      const [attached] = await run(tabId, (list, opts) => globalThis.__resumeflowForm.attach(list, opts), [fileItems, options], { frameIds: [frameId] });
-      summary.attached += attached?.result?.attached || 0;
-      summary.failed += attached?.result?.failed || 0;
+    for (const item of items.filter((candidate) => candidate.source === "file" && candidate.value)) {
+      const kind = item.value;
+      // Do this before downloading the file: after one attempt, later automatic page loads must not replace it even if
+      // the ATS has rebuilt the native input and made it look empty.
+      if (!shouldAttachFile(attachmentLedger, { applicationId, answerHost, kind, fingerprint: null, automatic: keepFilled })) {
+        summary.kept += 1;
+        continue;
+      }
+      files[kind] ||= await fileFor(applicationId, kind).catch(() => null);
+      const file = files[kind];
+      if (!file) {
+        summary.failed += 1;
+        continue;
+      }
+      const fingerprint = attachmentFingerprint(file);
+      if (!shouldAttachFile(attachmentLedger, { applicationId, answerHost, kind, fingerprint, automatic: keepFilled })) {
+        summary.kept += 1;
+        continue;
+      }
+      const previousAttachment = attachmentEntry(attachmentLedger, applicationId, answerHost, kind);
+
+      // Reserve before dispatching change: some ATS pages navigate synchronously from that event, destroying the frame
+      // before executeScript can return a success result. An explicit manual pass can retry an uncertain attempt.
+      await remember(kind, fingerprint, "attempted");
+      try {
+        const payload = [{ field_id: item.field_id, ...file }];
+        const [execution] = await run(tabId, (list, opts) => globalThis.__resumeflowForm.attach(list, opts), [payload, options], { frameIds: [frameId] });
+        const attached = execution?.result?.attached || 0;
+        const failed = execution?.result?.failed || 0;
+        const missing = execution?.result?.missing || 0;
+        const kept = execution?.result?.kept || 0;
+        summary.attached += attached;
+        summary.failed += failed;
+        summary.kept += kept;
+        if (missing) {
+          // The scanned input was replaced before execution. No upload event fired, so a later scan may safely retry.
+          if (previousAttachment) {
+            await remember(kind, previousAttachment.fingerprint, previousAttachment.status);
+          } else {
+            await forget(kind);
+          }
+        } else {
+          // No explicit result is intentionally left as attempted: older injected scripts and navigation can both make the
+          // result unknowable, and an automatic retry in that state would recreate the replacement loop.
+          await remember(kind, fingerprint, attached ? "attached" : failed ? "failed" : "attempted");
+        }
+      } catch {
+        // Keep the pre-dispatch attempt in session storage. A navigation here usually means the ATS accepted the file;
+        // retrying automatically would recreate the replacement loop. The user can still retry manually.
+        summary.failed += 1;
+      }
     }
   }
   return summary;
@@ -190,6 +267,7 @@ async function fillForm(tabId, applicationId, answers, { keepFilled = false } = 
  * question, the next page. Those automatic answers only fill empty fields.
  */
 async function answerForm(tabId, applicationId, { auto = false } = {}) {
+  if (!auto) await setTabState(tabId, { autoRunCount: 0 });
   const scanned = await scanForm(tabId);
   if (!scanned.length && !auto) throw new Error("No form fields found on this page. Open the application form and try again.");
   // Automatic answers ask only about empty fields: what the user typed, or answered before, costs nothing.
@@ -201,7 +279,7 @@ async function answerForm(tabId, applicationId, { auto = false } = {}) {
   }
   const tab = await chrome.tabs.get(tabId);
   const result = await api("POST", `/applications/${applicationId}/answers`, { page_url: tab.url, fields });
-  const summary = await fillForm(tabId, applicationId, result.answers, { keepFilled: auto });
+  const summary = await fillForm(tabId, applicationId, result.answers, { keepFilled: auto, answerHost: hostOf(tab.url) });
   const previous = await tabState(tabId);
   await setTabState(tabId, { applicationId, autoAnswer: previous?.autoAnswer ?? true, answerHost: auto ? previous?.answerHost : hostOf(tab.url) });
   await armWatcher(tabId, false).catch(() => {});
@@ -212,7 +290,6 @@ async function answerForm(tabId, applicationId, { auto = false } = {}) {
   return answered;
 }
 
-const autoRuns = new Map(); // tab id -> automatic answers since the page loaded (a cap against loops)
 const autoTimers = new Map();
 const autoBusy = new Set();
 
@@ -233,9 +310,11 @@ async function autoAnswer(tabId) {
   if (!state?.applicationId || !state.autoAnswer) return;
   const tab = await chrome.tabs.get(tabId).catch(() => null);
   if (!tab || hostOf(tab.url) !== state.answerHost) return; // only on the site where the user started answering
-  const runs = autoRuns.get(tabId) || 0;
+  // Keep the cap in session storage so a reload loop or service-worker restart cannot reset it. An explicit Fill action
+  // or linking a different application starts a fresh allowance.
+  const runs = Number(state.autoRunCount || 0);
   if (runs >= 30) return;
-  autoRuns.set(tabId, runs + 1);
+  await setTabState(tabId, { autoRunCount: runs + 1 });
   autoBusy.add(tabId);
   try {
     await answerForm(tabId, state.applicationId, { auto: true });
@@ -261,6 +340,7 @@ const handlers = {
       jobId: jobId ?? null,
       postingKey: jobPostingKey(tab?.url) ?? null,
       autoAnswer: same ? previous.autoAnswer : undefined,
+      autoRunCount: same ? Number(previous?.autoRunCount || 0) : 0,
     });
     if (applicationId) await armWatcher(tabId, false).catch(() => {});
     return state;
@@ -268,7 +348,7 @@ const handlers = {
   setAutoAnswer: ({ tabId, on }) => setTabState(tabId, { autoAnswer: Boolean(on) }),
   answerForm: ({ tabId, applicationId }) => answerForm(tabId, applicationId),
   capture: async ({ tabId }) => {
-    await inject(tabId, "src/content/capture.js", true);
+    await inject(tabId, ["src/lib/capture-quality.js", "src/content/capture.js"], true);
     const results = await run(tabId, () => globalThis.__resumeflowCapture.capture(), [], { allFrames: true });
     return pickCapture(results);
   },

@@ -147,6 +147,21 @@ export function useProcessJobs() {
   });
 }
 
+/** Permanently removes an inactive job that has no application history. */
+export function useDeleteJob() {
+  const client = useQueryClient();
+  return useMutation({
+    mutationFn: (id: string) => api.jobs.remove(id),
+    onSuccess: async (_data, id) => {
+      client.removeQueries({ queryKey: queryKeys.job(id), exact: true });
+      await Promise.all([
+        client.invalidateQueries({ queryKey: queryKeys.jobs, exact: false }),
+        client.invalidateQueries({ queryKey: queryKeys.dashboard }),
+      ]);
+    },
+  });
+}
+
 export function useJob(id: string) {
   return useQuery({
     queryKey: queryKeys.job(id),
