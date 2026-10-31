@@ -469,6 +469,17 @@ export interface QueueResult {
   skipped: { job_id: string; reason: string }[];
 }
 
+export interface DeleteAllJobsResult {
+  jobs: number;
+  applications: number;
+  documents: number;
+  generation_runs: number;
+  files_deleted: number;
+  files_not_deleted: string[];
+  folders_deleted: number;
+  folders_not_deleted: string[];
+}
+
 export interface BatchResult extends QueueResult {
   results: BatchItemResult[];
 }

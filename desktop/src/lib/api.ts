@@ -18,6 +18,7 @@ import type {
   CoverageView,
   CoverLetterContent,
   DashboardSummary,
+  DeleteAllJobsResult,
   DocumentTemplate,
   DocView,
   EvidenceOverview,
@@ -193,6 +194,7 @@ export const api = {
     saveMany: (items: JobCreate[], options: { process?: boolean; confirm_duplicates?: boolean } = {}) =>
       post<BatchResult>("/jobs/batch", { items, ...options }),
     process: (body: { job_ids?: string[]; all_saved?: boolean }) => post<QueueResult>("/jobs/process", body),
+    removeAll: (confirmation: string) => post<DeleteAllJobsResult>("/jobs/delete-all", { confirmation }),
     update: (id: string, body: Partial<JobCreate>) => patch<JobDetail>(`/jobs/${id}`, body),
     remove: (id: string) => del<void>(`/jobs/${id}`),
     analyze: (id: string) => post<JobDetail>(`/jobs/${id}/analyze`),

@@ -13,7 +13,7 @@ from resumeflow.db.models import Application, Candidate, CandidateMatch, Job, Pr
 from resumeflow.domain.enums import PipelineStatus, ProcessingJobType, ProcessingStatus
 from resumeflow.domain.requirements import JobRequirements
 from resumeflow.errors import AppError
-from resumeflow.services import batch, experience
+from resumeflow.services import batch, experience, job_deletion
 from resumeflow.services import jobs as service
 from resumeflow.services.matching import run_matching
 from resumeflow.services.queue import record_stage_event
@@ -218,6 +218,23 @@ class BatchGapsRequest(BaseModel):
 
     # Empty: every job waiting for skill answers.
     job_ids: list[str] = Field(default_factory=list, max_length=500)
+
+
+class DeleteAllJobsRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    confirmation: Literal["DELETE ALL JOBS"]
+
+
+@router.post("/delete-all")
+def delete_all_jobs(body: DeleteAllJobsRequest, request: Request, db: DbSession) -> dict[str, Any]:
+    """Permanently removes all jobs, applications and generated application files."""
+    queue = request.app.state.queue
+    queue.pause(timeout=1)
+    try:
+        return job_deletion.purge_all_jobs(db)
+    finally:
+        queue.resume()
 
 
 @router.post("/skill-gaps/batch")

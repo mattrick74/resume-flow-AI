@@ -162,6 +162,24 @@ export function useDeleteJob() {
   });
 }
 
+/** Removes every job, application and generated application file. */
+export function useDeleteAllJobs() {
+  const client = useQueryClient();
+  return useMutation({
+    mutationFn: (confirmation: string) => api.jobs.removeAll(confirmation),
+    onSuccess: async () => {
+      await Promise.all([
+        client.invalidateQueries({ queryKey: queryKeys.jobs }),
+        client.invalidateQueries({ queryKey: queryKeys.applications }),
+        client.invalidateQueries({ queryKey: queryKeys.candidates }),
+        client.invalidateQueries({ queryKey: queryKeys.dashboard }),
+        client.invalidateQueries({ queryKey: ["analytics"] }),
+        client.invalidateQueries({ queryKey: queryKeys.processingEvents }),
+      ]);
+    },
+  });
+}
+
 export function useJob(id: string) {
   return useQuery({
     queryKey: queryKeys.job(id),

@@ -13,12 +13,13 @@ import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
 import { Modal } from "@/components/ui/modal";
 import { Progress } from "@/components/ui/progress";
 import { Segmented } from "@/components/ui/segmented";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
-import { jobsInFlight, useDashboardSummary, useDeleteJob, useJobs, useProcessJobs } from "@/lib/queries";
+import { jobsInFlight, useDashboardSummary, useDeleteAllJobs, useDeleteJob, useJobs, useProcessJobs } from "@/lib/queries";
 import type { JobSummary, QueueResult } from "@/lib/types";
 import { formatRelativeTime } from "@/lib/utils";
 
@@ -139,6 +140,8 @@ export function JobsPage() {
   const [search, setSearch] = useState("");
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [deleting, setDeleting] = useState<JobSummary | null>(null);
+  const [deleteAllOpen, setDeleteAllOpen] = useState(false);
+  const [deleteAllConfirmation, setDeleteAllConfirmation] = useState("");
   const filterParam = params.get("filter");
   const filter: Filter = isFilter(filterParam) ? filterParam : "all";
   const setFilter = (next: Filter) => {
@@ -182,6 +185,7 @@ export function JobsPage() {
   const summary = useDashboardSummary();
   const processJobs = useProcessJobs();
   const deleteJob = useDeleteJob();
+  const deleteAllJobs = useDeleteAllJobs();
   const waiting = summary.data?.saved_jobs ?? 0;
   const needAnswers = summary.data?.jobs_needing_confirmation ?? 0;
   const answering = params.get("answer") === "1";
@@ -267,6 +271,18 @@ export function JobsPage() {
             <LoaderCircle className="size-3.5 animate-spin" /> Working in the background — you can keep using the app
           </span>
         )}
+        <Button
+          variant="outline"
+          size="sm"
+          className="ml-auto text-destructive hover:bg-destructive/10 hover:text-destructive"
+          disabled={deleteAllJobs.isPending}
+          onClick={() => {
+            setDeleteAllConfirmation("");
+            setDeleteAllOpen(true);
+          }}
+        >
+          <Trash2 /> Delete all jobs
+        </Button>
       </div>
 
       {chosen.length > 0 && (
@@ -378,6 +394,61 @@ export function JobsPage() {
       )}
       {total > 0 && <Pagination page={page} pageSize={size} total={total} onPage={(next) => setPaging(next)} onPageSize={(next) => setPaging(1, next)} label="jobs" />}
       <BatchConfirmDialog open={answering} onOpenChange={setAnswering} />
+      <Modal
+        open={deleteAllOpen}
+        onOpenChange={(open) => {
+          if (deleteAllJobs.isPending) return;
+          setDeleteAllOpen(open);
+          if (!open) setDeleteAllConfirmation("");
+        }}
+        title="Delete all jobs and applications?"
+        description="This permanently deletes every job, every related application, generated resume and cover-letter record, and files in their ResumeFlow output folders. Candidate profiles and original resumes are kept. This cannot be undone."
+        footer={
+          <>
+            <Button variant="ghost" disabled={deleteAllJobs.isPending} onClick={() => setDeleteAllOpen(false)}>
+              Cancel
+            </Button>
+            <Button
+              variant="destructive"
+              disabled={deleteAllConfirmation !== "DELETE ALL JOBS" || deleteAllJobs.isPending}
+              onClick={() =>
+                deleteAllJobs.mutate(deleteAllConfirmation, {
+                  onSuccess: (result) => {
+                    setSelected(new Set());
+                    setSearch("");
+                    setDeleteAllOpen(false);
+                    setDeleteAllConfirmation("");
+                    setFilter("all");
+                    const description = `${result.jobs} job${result.jobs === 1 ? "" : "s"}, ${result.applications} application${result.applications === 1 ? "" : "s"}, and ${result.files_deleted} file${result.files_deleted === 1 ? "" : "s"} removed.`;
+                    const leftovers = result.files_not_deleted.length + result.folders_not_deleted.length;
+                    if (leftovers) {
+                      toast.warning("History deleted, but some output folders remain", {
+                        description: `${description} ${leftovers} stored path${leftovers === 1 ? " was" : "s were"} outside the current output location or could not be removed.`,
+                      });
+                    } else {
+                      toast.success("All job history deleted", { description });
+                    }
+                  },
+                  onError: (error) => toast.error("Couldn't delete all jobs", { description: describeError(error) }),
+                })
+              }
+            >
+              <Trash2 /> {deleteAllJobs.isPending ? "Deleting everything…" : "Delete all jobs"}
+            </Button>
+          </>
+        }
+      >
+        <div className="space-y-2">
+          <Label htmlFor="delete-all-jobs-confirmation">Type DELETE ALL JOBS to confirm</Label>
+          <Input
+            id="delete-all-jobs-confirmation"
+            value={deleteAllConfirmation}
+            onChange={(event) => setDeleteAllConfirmation(event.target.value)}
+            autoComplete="off"
+            spellCheck={false}
+          />
+        </div>
+      </Modal>
       <Modal
         open={deleting !== null}
         onOpenChange={(open) => !open && !deleteJob.isPending && setDeleting(null)}
